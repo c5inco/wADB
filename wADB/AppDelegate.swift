@@ -411,6 +411,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startAtLoginMenuItem.target = self
         menu.addItem(startAtLoginMenuItem)
 
+        menu.addItem(.separator())
+
+        let aboutItem = NSMenuItem(
+            title: "About wADB",
+            action: #selector(showAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -503,6 +513,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             stopADB()
         }
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     /// Hands the shared ADB server back to whoever else wants it (Android
@@ -1348,6 +1363,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         stack.addArrangedSubview(menuPreviewSeparator(width: width))
         stack.addArrangedSubview(menuPreviewLabel("Start at Login", width: width))
+        stack.addArrangedSubview(menuPreviewSeparator(width: width))
+        stack.addArrangedSubview(menuPreviewLabel("About wADB", width: width))
         stack.addArrangedSubview(menuPreviewLabel("Quit", width: width))
 
         stack.translatesAutoresizingMaskIntoConstraints = false
