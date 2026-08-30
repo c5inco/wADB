@@ -1,0 +1,2 @@
+// Copy this file to Signing.local.xcconfig and replace the placeholder.
+DEVELOPMENT_TEAM = YOURTEAMID

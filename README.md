@@ -1,0 +1,90 @@
+<img src="artwork/mascot.webp" alt="wADB mascot: a small robot with a Wi-Fi badge on its chest, holding up an Android phone" width="200" height="200">
+
+# wADB
+
+**wADB** (pronounced *wad-be*) is a tiny macOS menu-bar app that keeps the standard ADB server running so paired Android phones remain available for wireless debugging — without keeping Android Studio open.
+
+Pair once by scanning a QR code, then ADB's native mDNS support reconnects the phone whenever the server starts. While enabled, wADB supervises the standard server at `127.0.0.1:5037` and restarts it if another app stops it. Android Studio, the `adb` command line, and every other ADB client see the same devices.
+
+## Requirements
+
+- macOS 14 or later
+- Android SDK Platform-Tools (`adb`) — wADB finds your existing install and never installs or replaces it
+- Your Mac and phone on the same Wi-Fi network
+- **Wireless debugging** enabled in the phone's Developer options
+
+## Getting started
+
+1. Launch wADB. It lives in the menu bar — no Dock icon or main window — and starts supervising ADB immediately.
+2. Allow **Local Network** access when macOS asks. Pairing and automatic reconnection need it.
+3. Choose **Pair new device…** from the menu. On your phone, open **Settings → Developer options → Wireless debugging → Pair device with QR code** and scan the code.
+
+The phone pairs and connects automatically. The menu lists live wireless ADB devices only; USB devices and emulators remain available to ADB clients but are not shown by wADB.
+
+Choose **Stop ADB** to disable supervision and stop the shared server. This disconnects wireless devices, USB devices, and emulators for every ADB client. **Start ADB** starts supervision again. **Stop ADB** only lasts for the session: launching wADB always starts the ADB server, and if the server is already running it attaches to it and leaves it alone. Quitting wADB stops supervision but deliberately leaves the current ADB server and its connections running.
+
+## Limitations and notes
+
+- Local Wi-Fi only; there is no remote-network relay.
+- If `adb` is missing, wADB shows an error explaining what to install — it won't install Platform-Tools for you.
+- ADB is a shared system-wide server. While wADB supervision is enabled, it restarts the server if Android Studio or another client kills it.
+- On Android 17+ with Platform-Tools 37+, ADB Wi-Fi 2.0 reconnects trusted devices automatically. wADB relies on that native behavior and keeps its server alive.
+
+## Security and privacy
+
+- QR pairing credentials are generated with the system's secure random source, handed to `adb pair` via stdin only — never argv, environment variables, logs, or disk — and wiped as soon as pairing succeeds, fails, expires, or the window closes.
+- Only non-sensitive pairing hints are persisted: the last verified endpoint, Bonjour name and address, display name, and transport fingerprint. Connection status is always derived from the current ADB server and is never persisted.
+- wADB uses your existing ADB server, keys, and pairings. There is no helper daemon, companion app, or third-party relay.
+
+## Building from source
+
+You'll need Xcode 26 (or a compatible toolchain). Open `wADB.xcodeproj`, select the **wADB** scheme, and build and run (⌘R) or test (⌘U) as usual.
+
+The project is generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen); `project.yml` is its source of truth. If you change `project.yml`, regenerate with:
+
+```sh
+xcodegen generate --spec project.yml
+```
+
+To build and test from the command line instead:
+
+```sh
+xcodebuild test -project wADB.xcodeproj -scheme wADB -configuration Debug
+xcodebuild build -project wADB.xcodeproj -scheme wADB -configuration Debug
+```
+
+### Local deployment
+
+For development deployments, the repository includes a script that builds with
+the `xcodebuildmcp` CLI, gracefully stops the installed app and its owned
+`track-devices` observer, installs the new bundle, and verifies the executable,
+new process, and shared ADB server:
+
+```sh
+./scripts/deploy-local.sh
+```
+
+The script installs to `/Applications/wADB.app` and preserves the previous app
+bundle in a temporary deployment directory under `/private/tmp`.
+
+Local builds use ad-hoc signing by default. To persist an Apple Developer team
+for builds from Xcode, copy the local signing template and replace the
+placeholder; the resulting file is ignored by Git:
+
+```sh
+cp Config/Signing.local.xcconfig.example Config/Signing.local.xcconfig
+```
+
+For CI or a one-off signed deployment, pass the team identifier without
+creating a local configuration file:
+
+```sh
+WADB_DEVELOPMENT_TEAM=YOURTEAMID ./scripts/deploy-local.sh
+```
+
+The implementation is intentionally small: an AppKit status-menu app, an ADB process manager with a self-recovering `track-devices` observer, Bonjour discovery for pairing, and minimal persisted multi-device state. A real QR scan is deliberately excluded from automated tests, since it would create a new pairing on a physical phone.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE)
+for copyright and third-party attribution.

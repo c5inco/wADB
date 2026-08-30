@@ -1,0 +1,4 @@
+// Public builds default to ad-hoc signing. A developer can persist a local
+// Apple team selection in the ignored file included below.
+DEVELOPMENT_TEAM =
+#include? "Signing.local.xcconfig"

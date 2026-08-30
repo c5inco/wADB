@@ -1,0 +1,17 @@
+<!--
+Derived from stat_sys_adb.xml in the Android Open Source Project:
+https://android.googlesource.com/platform/frameworks/base/+/android17-release/core/res/res/drawable-nodpi/stat_sys_adb.xml
+
+Copyright (C) 2026 The Android Open Source Project
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Modified: converted from an Android vector drawable to SVG, recolored for template rendering.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <title>Wireless debugging</title>
+  <path d="M 2.75,12 a 9.25,9.25 0 1,0 18.5,0 a 9.25,9.25 0 1,0 -18.5,0" stroke="#000000" stroke-width="1.5"/>
+  <path d="M5.67529 11.2568H6.97913" stroke="#000000" stroke-width="1.49696" stroke-linecap="round"/>
+  <path d="M11.1743 5.75659V7.06043" stroke="#000000" stroke-width="1.49696" stroke-linecap="round"/>
+  <path d="M17.5444 16.0402C21.1082 12.4765 20.6357 8.22556 19.3471 6.41628" stroke="#000000" stroke-width="1.49696" stroke-linecap="round"/>
+  <path d="M17.6117 15.9735C11.6989 21.8862 3.79646 14.2714 8.86758 9.20029C13.4664 4.60148 19.0434 9.95676 15.6026 13.7955C12.3017 17.4782 8.19862 13.1812 11.5015 10.5195C13.2345 9.12296 15.2362 11.4892 13.11 12.6608" stroke="#000000" stroke-width="1.49696" stroke-linecap="round"/>
+</svg>

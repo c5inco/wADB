@@ -1,0 +1,12 @@
+<!--
+Derived from stat_sys_adb.xml in the Android Open Source Project:
+https://android.googlesource.com/platform/frameworks/base/+/android17-release/core/res/res/drawable-nodpi/stat_sys_adb.xml
+
+Copyright (C) 2026 The Android Open Source Project
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Modified: converted from an Android vector drawable to SVG, rescaled for the application icon.
+-->
+<svg width="854" height="854" viewBox="0 0 854 854" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M156.747 394.892H212.378M391.372 160.216V215.847M663.163 598.984C815.218 446.933 795.058 265.559 740.078 188.363M666.034 596.138C413.755 848.413 76.5842 523.515 292.952 307.147C489.168 110.931 727.12 339.423 580.313 503.21C439.474 660.338 264.41 476.999 405.333 363.434C479.274 303.848 564.68 404.808 473.962 454.796M31.9352 426.602C31.9352 531.274 73.516 631.659 147.53 705.673C221.545 779.688 321.93 821.268 426.602 821.268C531.274 821.268 631.659 779.688 705.673 705.673C779.688 631.659 821.268 531.274 821.268 426.602C821.268 321.93 779.688 221.545 705.673 147.53C631.659 73.516 531.274 31.9352 426.602 31.9352C321.93 31.9352 221.545 73.516 147.53 147.53C73.516 221.545 31.9352 321.93 31.9352 426.602Z" stroke="black" stroke-width="63.8703" stroke-linecap="round"/>
+</svg>

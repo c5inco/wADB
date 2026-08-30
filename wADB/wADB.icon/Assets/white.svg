@@ -1,0 +1,12 @@
+<!--
+Derived from stat_sys_adb.xml in the Android Open Source Project:
+https://android.googlesource.com/platform/frameworks/base/+/android17-release/core/res/res/drawable-nodpi/stat_sys_adb.xml
+
+Copyright (C) 2026 The Android Open Source Project
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Modified: converted from an Android vector drawable to SVG, rescaled and recolored for the application icon.
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M242.146 480.29H297.776M476.77 245.615V301.245M748.561 684.382C900.617 532.331 880.457 350.957 825.476 273.761M751.433 681.536C499.153 933.811 161.982 608.913 378.35 392.546C574.567 196.33 812.519 424.822 665.711 588.608C524.873 745.736 349.808 562.398 490.731 448.832C564.672 389.246 650.078 490.206 559.36 540.194M117.333 512C117.333 616.672 158.914 717.057 232.929 791.071C306.943 865.086 407.328 906.667 512 906.667C616.672 906.667 717.057 865.086 791.071 791.071C865.086 717.057 906.667 616.672 906.667 512C906.667 407.328 865.086 306.943 791.071 232.929C717.057 158.914 616.672 117.333 512 117.333C407.328 117.333 306.943 158.914 232.929 232.929C158.914 306.943 117.333 407.328 117.333 512Z" stroke="white" stroke-width="63.8703" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,13 @@
+wADB
+Copyright 2026 Chris Sinco
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product includes modified artwork derived from stat_sys_adb.xml:
+https://android.googlesource.com/platform/frameworks/base/+/android17-release/core/res/res/drawable-nodpi/stat_sys_adb.xml
+
+Copyright (C) 2026 The Android Open Source Project
+Licensed under the Apache License, Version 2.0.
+
+The artwork was converted from an Android vector drawable to SVG, then
+rescaled and recolored for use in wADB.
