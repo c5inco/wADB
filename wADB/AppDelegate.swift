@@ -123,6 +123,87 @@ private final class WirelessDeviceMenuItemView: NSView {
     }
 }
 
+private final class AboutWindowController: NSWindowController {
+    private let onShareLogs: () -> Void
+    private let shareLogsButton: NSButton
+
+    init(
+        appIcon: NSImage?,
+        version: String,
+        build: String,
+        shareLogsEnabled: Bool,
+        onShareLogs: @escaping () -> Void
+    ) {
+        self.onShareLogs = onShareLogs
+
+        let iconView = NSImageView()
+        iconView.image = appIcon
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.widthAnchor.constraint(equalToConstant: 96).isActive = true
+        iconView.heightAnchor.constraint(equalToConstant: 96).isActive = true
+
+        let nameLabel = NSTextField(labelWithString: "wADB")
+        nameLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+
+        let versionLabel = NSTextField(labelWithString: "Version \(version) (\(build))")
+        versionLabel.font = .systemFont(ofSize: 13)
+        versionLabel.textColor = .secondaryLabelColor
+
+        let descriptionLabel = NSTextField(
+            wrappingLabelWithString: "Keeps the standard ADB server available for wireless debugging."
+        )
+        descriptionLabel.alignment = .center
+        descriptionLabel.font = .systemFont(ofSize: 13)
+        descriptionLabel.maximumNumberOfLines = 0
+        descriptionLabel.preferredMaxLayoutWidth = 300
+
+        let shareLogsButton = NSButton(title: "Share Logs", target: nil, action: nil)
+        shareLogsButton.bezelStyle = .rounded
+        shareLogsButton.isEnabled = shareLogsEnabled
+        shareLogsButton.identifier = NSUserInterfaceItemIdentifier("About.ShareLogs")
+        self.shareLogsButton = shareLogsButton
+
+        let stack = NSStackView(
+            views: [iconView, nameLabel, versionLabel, descriptionLabel, shareLogsButton]
+        )
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 8
+        stack.setCustomSpacing(18, after: iconView)
+        stack.setCustomSpacing(2, after: nameLabel)
+        stack.setCustomSpacing(18, after: versionLabel)
+        stack.setCustomSpacing(24, after: descriptionLabel)
+        stack.edgeInsets = NSEdgeInsets(top: 28, left: 36, bottom: 28, right: 36)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 340),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "About wADB"
+        window.contentView = stack
+        window.isReleasedWhenClosed = false
+
+        super.init(window: window)
+        shareLogsButton.target = self
+        shareLogsButton.action = #selector(shareLogs)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    func setShareLogsEnabled(_ enabled: Bool) {
+        shareLogsButton.isEnabled = enabled
+    }
+
+    @objc private func shareLogs() {
+        window?.close()
+        onShareLogs()
+    }
+}
+
 #if DEBUG
 private final class VerificationWindowController: NSWindowController {
     private let stateLabel = NSTextField(labelWithString: "Starting ADB…")
@@ -323,6 +404,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var duplicateEndpointsBeingRemoved = Set<String>()
     private var lastLoggedWirelessCount = -1
     private var lastLoggedServiceCounts = (-1, -1)
+    private var isLogExportInFlight = false
+    private var aboutWindowController: AboutWindowController?
 #if DEBUG
     private var verificationWindowController: VerificationWindowController?
 #endif
@@ -515,9 +598,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func shareLogs() {
+        guard !isLogExportInFlight else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let explanation = makeShareLogsConfirmationAlert()
+        guard explanation.runModal() == .alertFirstButtonReturn else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "Share Logs"
+        panel.nameFieldStringValue = "wADB-diagnostics.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        let context = DiagnosticsContext(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown",
+            appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown",
+            adbVersion: adbInstallation?.version,
+            sensitiveValues: diagnosticSensitiveValues()
+        )
+        isLogExportInFlight = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result {
+                let report = DiagnosticsExporter.makeReport(context: context)
+                try report.write(to: destination, atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.async {
+                self?.finishLogExport(result, destination: destination)
+            }
+        }
+    }
+
+    private func makeShareLogsConfirmationAlert() -> NSAlert {
+        let explanation = NSAlert()
+        explanation.alertStyle = .informational
+        explanation.messageText = "Share Logs?"
+        explanation.informativeText = """
+        wADB will create an anonymous text report containing its last 24 hours of logs and a recent tail of the local ADB server log. Device identifiers, network addresses, user paths, and other common personal identifiers are replaced with placeholders.
+
+        Nothing is uploaded automatically. You can review the file before sharing it.
+        """
+        explanation.addButton(withTitle: "Continue")
+        explanation.addButton(withTitle: "Cancel")
+        return explanation
+    }
+
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(nil)
+        let controller: AboutWindowController
+        if let existing = aboutWindowController {
+            controller = existing
+        } else {
+            controller = makeAboutWindowController()
+            aboutWindowController = controller
+        }
+        controller.setShareLogsEnabled(!isLogExportInFlight)
+        controller.showWindow(nil)
+        controller.window?.center()
+    }
+
+    private func makeAboutWindowController() -> AboutWindowController {
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Unknown"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "Unknown"
+        return AboutWindowController(
+            appIcon: NSApp.applicationIconImage,
+            version: version,
+            build: build,
+            shareLogsEnabled: !isLogExportInFlight,
+            onShareLogs: { [weak self] in self?.shareLogs() }
+        )
+    }
+
+    private func diagnosticSensitiveValues() -> [String] {
+        let remembered = rememberedDevices.flatMap {
+            [$0.endpoint, $0.host, $0.serviceName, $0.displayName, $0.fingerprint]
+                .compactMap { $0 }
+        }
+        let transportValues = transports.flatMap { transport in
+            [transport.serial, transport.fingerprint, transport.attributes["product"],
+             transport.attributes["model"], transport.attributes["device"]]
+                .compactMap { $0 }
+        }
+        let serviceValues = services.flatMap { service in
+            [service.name, service.host, service.targetHost, service.endpoint, service.identity]
+                .compactMap { $0 }
+        }
+        return remembered + transportValues + serviceValues
+    }
+
+    private func finishLogExport(_ result: Result<Void, Error>, destination: URL) {
+        isLogExportInFlight = false
+        let alert = NSAlert()
+        switch result {
+        case .success:
+            alert.messageText = "Logs Ready to Share"
+            alert.informativeText = "Review the text file before sending it."
+            alert.addButton(withTitle: "Show in Finder")
+            alert.addButton(withTitle: "Done")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting([destination])
+            }
+        case let .failure(error):
+            // The write error can include the user-selected destination path.
+            logger.error("Log sharing export failed")
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn’t Prepare Logs"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     /// Hands the shared ADB server back to whoever else wants it (Android
@@ -1303,6 +1496,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 showsPairing: false,
                 to: directory.appendingPathComponent("wadb-starting.png")
             )
+
+            let about = makeAboutWindowController()
+            about.window?.contentView?.layoutSubtreeIfNeeded()
+            about.window?.displayIfNeeded()
+            if let contentView = about.window?.contentView {
+                try capture(
+                    view: contentView,
+                    to: directory.appendingPathComponent("wadb-about.png")
+                )
+            }
+
+            let shareLogsConfirmation = makeShareLogsConfirmationAlert()
+            shareLogsConfirmation.layout()
+            if let contentView = shareLogsConfirmation.window.contentView {
+                try capture(
+                    view: contentView,
+                    to: directory.appendingPathComponent("wadb-share-logs-confirmation.png")
+                )
+            }
 
             let pairing = PairingWindowController()
             try pairing.show(

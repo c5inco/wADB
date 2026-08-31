@@ -35,6 +35,7 @@ Choose **Stop ADB** to disable supervision and stop the shared server. This disc
 - QR pairing credentials are generated with the system's secure random source, handed to `adb pair` via stdin only — never argv, environment variables, logs, or disk — and wiped as soon as pairing succeeds, fails, expires, or the window closes.
 - Only non-sensitive pairing hints are persisted: the last verified endpoint, Bonjour name and address, display name, and transport fingerprint. Connection status is always derived from the current ADB server and is never persisted.
 - wADB uses your existing ADB server, keys, and pairings. There is no helper daemon, companion app, or third-party relay.
+- **About wADB → Share Logs** creates a local, reviewable text report for support. Nothing is uploaded automatically. Before saving, wADB replaces known device details, network addresses, user paths, and common personal identifiers with stable placeholders. The confirmation explains what is included so users can choose whether to continue.
 
 ## Building from source
 

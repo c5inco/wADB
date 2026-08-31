@@ -14,9 +14,11 @@
 		3FB264B0118EFF3C89394C13 /* BonjourCorrelationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10F4901AE1534B104285F64 /* BonjourCorrelationTests.swift */; };
 		4990A44437D8B22F1AB90DFB /* ADBOutputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EF47AD33D368DB923AC95F /* ADBOutputParser.swift */; };
 		7B9982B36D495FE7DF1BF464 /* ADBManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDA49B99E6223B9F8CC31B3 /* ADBManager.swift */; };
+		80556EBFB193444109AD661F /* DiagnosticsExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF406913918E4B66B100643 /* DiagnosticsExporter.swift */; };
 		94FAFA1A75EFF225D8C868BD /* PairingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599A91341F4D8C65FEE136A7 /* PairingCoordinator.swift */; };
 		9ACFC3EF1EDC364A0A035BA1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B661CC8A43637B2E1ADE1BB0 /* Assets.xcassets */; };
 		B2FBA565F66878EF95AED280 /* StatusItemImageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2633E0DE3E55AB67EE5EFE8B /* StatusItemImageTests.swift */; };
+		B8BD6C39B4FA186D2BB6FE15 /* DiagnosticsExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98B6F55D41A52376B5FA2C79 /* DiagnosticsExporterTests.swift */; };
 		C5EC49844C047DDF8DA45671 /* wADB.icon in Resources */ = {isa = PBXBuildFile; fileRef = C6BB2EF66222097647616602 /* wADB.icon */; };
 		C7F1E64BD3D55F5D15038FD2 /* ConnectionDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B99B13F58F9F1ADEE31B47E1 /* ConnectionDecisionTests.swift */; };
 		C96A16FD6306A994E88F110A /* QRPayloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95DCD5909968C9D5849CBF7D /* QRPayloadTests.swift */; };
@@ -47,6 +49,8 @@
 		8167B2AAB17BD1F17B3E839D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		83A2B2B748934C4F97411F68 /* wADB.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = wADB.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95DCD5909968C9D5849CBF7D /* QRPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRPayloadTests.swift; sourceTree = "<group>"; };
+		98B6F55D41A52376B5FA2C79 /* DiagnosticsExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporterTests.swift; sourceTree = "<group>"; };
+		9DF406913918E4B66B100643 /* DiagnosticsExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsExporter.swift; sourceTree = "<group>"; };
 		B6145057389BEF857513E057 /* ADBOutputParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBOutputParserTests.swift; sourceTree = "<group>"; };
 		B661CC8A43637B2E1ADE1BB0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B99B13F58F9F1ADEE31B47E1 /* ConnectionDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionDecisionTests.swift; sourceTree = "<group>"; };
@@ -73,6 +77,7 @@
 				B6145057389BEF857513E057 /* ADBOutputParserTests.swift */,
 				D10F4901AE1534B104285F64 /* BonjourCorrelationTests.swift */,
 				B99B13F58F9F1ADEE31B47E1 /* ConnectionDecisionTests.swift */,
+				98B6F55D41A52376B5FA2C79 /* DiagnosticsExporterTests.swift */,
 				0F68DDBD5A769BF4F4B9A4A1 /* PairingWindowControllerTests.swift */,
 				95DCD5909968C9D5849CBF7D /* QRPayloadTests.swift */,
 				2633E0DE3E55AB67EE5EFE8B /* StatusItemImageTests.swift */,
@@ -89,6 +94,7 @@
 				F84331AF1B13DF1D9A2FD4E0 /* AppDelegate.swift */,
 				B661CC8A43637B2E1ADE1BB0 /* Assets.xcassets */,
 				76D3F95772993112A49106D8 /* BonjourDiscovery.swift */,
+				9DF406913918E4B66B100643 /* DiagnosticsExporter.swift */,
 				F4543C813F88F1DD33E9E634 /* Info.plist */,
 				8167B2AAB17BD1F17B3E839D /* Models.swift */,
 				599A91341F4D8C65FEE136A7 /* PairingCoordinator.swift */,
@@ -215,6 +221,7 @@
 				38944F70B39E3B5C7A06D4FC /* ADBOutputParserTests.swift in Sources */,
 				3FB264B0118EFF3C89394C13 /* BonjourCorrelationTests.swift in Sources */,
 				C7F1E64BD3D55F5D15038FD2 /* ConnectionDecisionTests.swift in Sources */,
+				B8BD6C39B4FA186D2BB6FE15 /* DiagnosticsExporterTests.swift in Sources */,
 				F8694EB251E2E1997573C9F1 /* PairingWindowControllerTests.swift in Sources */,
 				C96A16FD6306A994E88F110A /* QRPayloadTests.swift in Sources */,
 				B2FBA565F66878EF95AED280 /* StatusItemImageTests.swift in Sources */,
@@ -230,6 +237,7 @@
 				01C4703D57A0D228AAF9A41C /* ADBQRPayload.swift in Sources */,
 				DA2856DE59E7EEAF14AFF0C1 /* AppDelegate.swift in Sources */,
 				F1A0F4505649F8A045DB4037 /* BonjourDiscovery.swift in Sources */,
+				80556EBFB193444109AD661F /* DiagnosticsExporter.swift in Sources */,
 				1FE8B664D5E069661D18AF79 /* Models.swift in Sources */,
 				94FAFA1A75EFF225D8C868BD /* PairingCoordinator.swift in Sources */,
 				2CE33640F008CF2E64A09A9D /* PairingWindowController.swift in Sources */,
