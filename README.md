@@ -6,6 +6,8 @@
 
 Pair once by scanning a QR code, then ADB's native mDNS support reconnects the phone whenever the server starts. While enabled, wADB supervises the standard server at `127.0.0.1:5037` and restarts it if another app stops it. Android Studio, the `adb` command line, and every other ADB client see the same devices.
 
+<video src="artwork/wadb-menu-demo.mp4" controls title="wADB menu-bar app showing a connected Pixel 10 Pro and opening the wireless pairing window"></video>
+
 ## Requirements
 
 - macOS 14 or later
