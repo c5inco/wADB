@@ -1,12 +1,10 @@
-<img src="artwork/mascot.webp" alt="wADB mascot: a small robot with a Wi-Fi badge on its chest, holding up an Android phone" width="200" height="200">
+<img height="360" alt="image" src="https://github.com/user-attachments/assets/9929597d-4d11-4293-bbf5-df5f6fea6a25" />
 
 # wADB
 
 **wADB** (pronounced *wad-be*) is a tiny macOS menu-bar app that keeps the standard ADB server running so paired Android phones remain available for wireless debugging — without keeping Android Studio open.
 
 Pair once by scanning a QR code, then ADB's native mDNS support reconnects the phone whenever the server starts. While enabled, wADB supervises the standard server at `127.0.0.1:5037` and restarts it if another app stops it. Android Studio, the `adb` command line, and every other ADB client see the same devices.
-
-<video src="artwork/wadb-menu-demo.mp4" controls title="wADB menu-bar app showing a connected Pixel 10 Pro and opening the wireless pairing window"></video>
 
 ## Requirements
 
