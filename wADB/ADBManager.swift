@@ -6,6 +6,17 @@ struct ADBInstallation: Equatable {
     let version: String
 }
 
+enum ADBServerStartOutcome: Equatable {
+    case alreadyResponsive
+    case started(exitStatus: Int32)
+    case competingStarterWon(exitStatus: Int32?)
+}
+
+struct ADBPreparation: Equatable {
+    let installation: ADBInstallation
+    let serverStartOutcome: ADBServerStartOutcome
+}
+
 struct ADBProcessResult {
     let status: Int32
     let standardOutput: String
@@ -105,7 +116,7 @@ final class ADBManager {
         return environment
     }
 
-    func prepare(completion: @escaping (Result<ADBInstallation, Error>) -> Void) {
+    func prepare(completion: @escaping (Result<ADBPreparation, Error>) -> Void) {
         run(arguments: ["version"]) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -226,23 +237,29 @@ final class ADBManager {
 
     private func startServer(
         version: String,
-        completion: @escaping (Result<ADBInstallation, Error>) -> Void
+        completion: @escaping (Result<ADBPreparation, Error>) -> Void
     ) {
         probeServer { [weak self] serverIsResponsive in
             guard let self else { return }
             guard !serverIsResponsive else {
-                completion(.success(ADBInstallation(
-                    executableURL: self.executableURL,
-                    version: version
+                completion(.success(ADBPreparation(
+                    installation: ADBInstallation(
+                        executableURL: self.executableURL,
+                        version: version
+                    ),
+                    serverStartOutcome: .alreadyResponsive
                 )))
                 return
             }
             self.run(arguments: ["start-server"]) { [weak self] result in
                 guard let self else { return }
                 if case let .success(processResult) = result, processResult.status == 0 {
-                    completion(.success(ADBInstallation(
-                        executableURL: self.executableURL,
-                        version: version
+                    completion(.success(ADBPreparation(
+                        installation: ADBInstallation(
+                            executableURL: self.executableURL,
+                            version: version
+                        ),
+                        serverStartOutcome: .started(exitStatus: processResult.status)
                     )))
                     return
                 }
@@ -251,9 +268,19 @@ final class ADBManager {
                 self.probeServer(after: self.postStartProbeDelay) { [weak self] responsive in
                     guard let self else { return }
                     if responsive {
-                        completion(.success(ADBInstallation(
-                            executableURL: self.executableURL,
-                            version: version
+                        let exitStatus: Int32?
+                        switch result {
+                        case let .success(processResult):
+                            exitStatus = processResult.status
+                        case .failure:
+                            exitStatus = nil
+                        }
+                        completion(.success(ADBPreparation(
+                            installation: ADBInstallation(
+                                executableURL: self.executableURL,
+                                version: version
+                            ),
+                            serverStartOutcome: .competingStarterWon(exitStatus: exitStatus)
                         )))
                     } else {
                         completion(self.serverStartFailure(from: result))
@@ -275,7 +302,7 @@ final class ADBManager {
 
     private func serverStartFailure(
         from result: Result<ADBProcessResult, Error>
-    ) -> Result<ADBInstallation, Error> {
+    ) -> Result<ADBPreparation, Error> {
         switch result {
         case let .failure(error):
             .failure(error)

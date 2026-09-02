@@ -587,7 +587,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         serverState = .starting
         discovery.start()
         startWatchdog()
-        attemptServerStart(using: adb, generation: generation)
+        attemptServerStart(
+            using: adb,
+            generation: generation,
+            operationID: UUID().uuidString,
+            reason: "app supervision start"
+        )
     }
 
     @objc private func toggleADB() {
@@ -717,7 +722,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Studio, a terminal). Everything here is torn down for this run only.
     private func stopADB() {
         guard let adb else { return }
-        logger.info("Stopping ADB at the user's request")
+        let operationID = UUID().uuidString
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        logger.info(
+            "ADB kill \(operationID, privacy: .public) requested; reason=user stop"
+        )
         operationGeneration = UUID()
         isServerStartInFlight = false
         isRecoveryInFlight = false
@@ -744,10 +753,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         discovery.stop()
         serverState = .stopped
         adb.killServer { [weak self] result in
-            guard case let .failure(error) = result else { return }
-            self?.logger.error(
-                "Could not stop ADB: \(error.localizedDescription, privacy: .public)"
-            )
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            switch result {
+            case let .success(processResult):
+                self?.logger.info(
+                    "ADB kill \(operationID, privacy: .public) completed; exit_status=\(processResult.status, privacy: .public); elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                )
+            case let .failure(error):
+                self?.logger.error(
+                    "ADB kill \(operationID, privacy: .public) failed; elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public); error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
     }
 
@@ -756,11 +772,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               serverState.isRunning,
               restartRecommendedDeviceIDs.contains(deviceID),
               !isExplicitRestartInFlight else { return }
-        let displayName = rememberedDevices.first {
-            $0.serviceName == deviceID
-        }?.displayName ?? deviceID
+        let operationID = UUID().uuidString
+        let killStartedAt = ProcessInfo.processInfo.systemUptime
         logger.info(
-            "Restarting standard ADB at the user's request for \(displayName, privacy: .public)"
+            "ADB kill \(operationID, privacy: .public) requested; reason=per-device restart"
         )
         isExplicitRestartInFlight = true
         operationGeneration = UUID()
@@ -787,32 +802,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self,
                       let adb,
                       self.operationGeneration == generation else { return }
-                if case let .failure(error) = result {
+                let elapsed = ProcessInfo.processInfo.systemUptime - killStartedAt
+                switch result {
+                case let .success(processResult):
+                    self.logger.info(
+                        "ADB kill \(operationID, privacy: .public) completed; exit_status=\(processResult.status, privacy: .public); elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                    )
+                case let .failure(error):
                     self.logger.error(
-                        "Explicit ADB restart could not stop the old server: \(error.localizedDescription, privacy: .public)"
+                        "ADB kill \(operationID, privacy: .public) failed; elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public); error=\(error.localizedDescription, privacy: .public)"
                     )
                 }
                 self.discovery.refresh()
-                self.attemptServerStart(using: adb, generation: generation)
+                self.attemptServerStart(
+                    using: adb,
+                    generation: generation,
+                    operationID: operationID,
+                    reason: "per-device restart"
+                )
             }
         }
     }
 
-    private func attemptServerStart(using adb: ADBManager, generation: UUID) {
+    private func attemptServerStart(
+        using adb: ADBManager,
+        generation: UUID,
+        operationID: String,
+        reason: String
+    ) {
         guard operationGeneration == generation, !isServerStartInFlight else { return }
+        let startedAt = ProcessInfo.processInfo.systemUptime
         isServerStartInFlight = true
         serverState = .starting
+        logger.info(
+            "ADB start \(operationID, privacy: .public) beginning; reason=\(reason, privacy: .public)"
+        )
         adb.prepare { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, self.operationGeneration == generation else { return }
+                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
                 self.isServerStartInFlight = false
                 self.isExplicitRestartInFlight = false
                 switch result {
-                case let .success(installation):
+                case let .success(preparation):
+                    let installation = preparation.installation
                     self.adbInstallation = installation
                     self.serverState = .running
+                    switch preparation.serverStartOutcome {
+                    case .alreadyResponsive:
+                        self.logger.info(
+                            "ADB start \(operationID, privacy: .public) found server already responsive; elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                        )
+                    case let .started(exitStatus):
+                        self.logger.info(
+                            "ADB start \(operationID, privacy: .public) completed directly; exit_status=\(exitStatus, privacy: .public); elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                        )
+                    case let .competingStarterWon(exitStatus):
+                        if let exitStatus {
+                            self.logger.info(
+                                "ADB start \(operationID, privacy: .public) accepted competing starter; local_exit_status=\(exitStatus, privacy: .public); elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                            )
+                        } else {
+                            self.logger.info(
+                                "ADB start \(operationID, privacy: .public) accepted competing starter after local launch failure; elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public)"
+                            )
+                        }
+                    }
                     self.logger.info(
-                        "Supervising standard adb \(installation.version, privacy: .public) on localhost:5037"
+                        "ADB observer \(operationID, privacy: .public) restart requested; adb_version=\(installation.version, privacy: .public)"
                     )
                     adb.startTracking(
                         onUpdate: { [weak self] in self?.handleTransports($0) },
@@ -825,7 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.adbInstallation = nil
                     self.serverState = .unavailable(error.localizedDescription)
                     self.logger.error(
-                        "ADB start failed: \(error.localizedDescription, privacy: .public)"
+                        "ADB start \(operationID, privacy: .public) failed; elapsed_seconds=\(elapsed, format: .fixed(precision: 3), privacy: .public); error=\(error.localizedDescription, privacy: .public)"
                     )
                     // No bespoke backoff here: the watchdog retries on its own tick.
                 }
@@ -868,7 +925,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let adb, !serverState.isStopped else { return }
         guard serverState.isRunning else {
             if serverState.shouldAttemptStartOnWatchdogTick {
-                attemptServerStart(using: adb, generation: operationGeneration)
+                attemptServerStart(
+                    using: adb,
+                    generation: operationGeneration,
+                    operationID: UUID().uuidString,
+                    reason: "watchdog retry"
+                )
             }
             return
         }
@@ -934,6 +996,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.logger.info(
                         "ADB recovery \(recoveryID, privacy: .public) found server responsive; restarting observer only"
                     )
+                    self.logger.info(
+                        "ADB observer \(recoveryID, privacy: .public) restart requested; reason=responsive recovery probe"
+                    )
                     adb.startTracking(
                         onUpdate: { [weak self] in self?.handleTransports($0) },
                         onStopped: { [weak self] error in
@@ -945,7 +1010,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         "ADB recovery \(recoveryID, privacy: .public) found server unavailable; requesting non-destructive start"
                     )
                     self.serverState = .unavailable("localhost:5037 did not respond")
-                    self.attemptServerStart(using: adb, generation: generation)
+                    self.attemptServerStart(
+                        using: adb,
+                        generation: generation,
+                        operationID: recoveryID,
+                        reason: "automatic recovery: \(trigger)"
+                    )
                 }
             }
         }

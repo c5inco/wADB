@@ -254,7 +254,10 @@ final class SupervisorModelTests: XCTestCase {
         let prepared = expectation(description: "ADB prepared")
 
         manager.prepare { result in
-            if case let .failure(error) = result {
+            switch result {
+            case let .success(preparation):
+                XCTAssertEqual(preparation.serverStartOutcome, .alreadyResponsive)
+            case let .failure(error):
                 XCTFail("Expected preparation to succeed: \(error)")
             }
             prepared.fulfill()
@@ -262,6 +265,30 @@ final class SupervisorModelTests: XCTestCase {
 
         wait(for: [prepared], timeout: 2)
         XCTAssertEqual(try fixture.commands(), ["version"])
+    }
+
+    func testSuccessfulStarterReportsDirectStartOutcome() throws {
+        let fixture = try makeADBFixture(startServerExitStatus: 0)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let manager = ADBManager(
+            executableURL: fixture.executable,
+            serverProbe: { false },
+            postStartProbeDelay: 0
+        )
+        let prepared = expectation(description: "ADB prepared")
+
+        manager.prepare { result in
+            switch result {
+            case let .success(preparation):
+                XCTAssertEqual(preparation.serverStartOutcome, .started(exitStatus: 0))
+            case let .failure(error):
+                XCTFail("Expected direct start to succeed: \(error)")
+            }
+            prepared.fulfill()
+        }
+
+        wait(for: [prepared], timeout: 2)
+        XCTAssertEqual(try fixture.commands(), ["version", "start-server"])
     }
 
     func testFailedStarterAcceptsServerThatWonRace() throws {
@@ -276,7 +303,13 @@ final class SupervisorModelTests: XCTestCase {
         let prepared = expectation(description: "ADB prepared")
 
         manager.prepare { result in
-            if case let .failure(error) = result {
+            switch result {
+            case let .success(preparation):
+                XCTAssertEqual(
+                    preparation.serverStartOutcome,
+                    .competingStarterWon(exitStatus: 1)
+                )
+            case let .failure(error):
                 XCTFail("Expected lost-race recovery to succeed: \(error)")
             }
             prepared.fulfill()
@@ -515,7 +548,7 @@ final class SupervisorModelTests: XCTestCase {
         )
     }
 
-    private func makeADBFixture() throws -> ADBFixture {
+    private func makeADBFixture(startServerExitStatus: Int32 = 1) throws -> ADBFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("wADB-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -531,8 +564,11 @@ final class SupervisorModelTests: XCTestCase {
           printf '%s\\n' 'Android Debug Bridge version 1.0.41' 'Version 37.0.1-15733141'
           exit 0
         fi
+        if [ \(startServerExitStatus) -eq 0 ]; then
+          exit 0
+        fi
         printf '%s\\n' 'ADB server did not ACK' >&2
-        exit 1
+        exit \(startServerExitStatus)
         """
         try Data(script.utf8).write(to: executable)
         XCTAssertEqual(chmod(executable.path, 0o700), 0)
