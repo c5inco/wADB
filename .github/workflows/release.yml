@@ -1,0 +1,76 @@
+name: Notarized release
+
+on:
+  push:
+    tags: ['v*']
+  # Select an existing vX.Y.Z tag when manually rerunning.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notarized-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment: release-signing
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test release input validation
+        run: bash scripts/test-release-inputs.sh
+
+      - name: Validate tag and trusted history
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" bash scripts/build-release.sh --validate-inputs
+          git merge-base --is-ancestor HEAD origin/main
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build and notarize app and DMG
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          CI_KEYCHAIN_PASSWORD: ${{ secrets.CI_KEYCHAIN_PASSWORD }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+        run: bash scripts/build-release.sh
+
+      - name: Preserve diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/**/logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Publish validated release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Never overwrite an existing release or published asset on a rerun.
+          gh release create "$RELEASE_TAG" \
+            "dist/v$VERSION-build-$BUILD_NUMBER/wADB-$VERSION-mac-universal.dmg" \
+            "dist/v$VERSION-build-$BUILD_NUMBER/wADB-$VERSION-mac-universal.dmg.sha256" \
+            --verify-tag --generate-notes
