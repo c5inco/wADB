@@ -87,7 +87,7 @@ app="$scratch/wADB.xcarchive/Products/Applications/wADB.app"
     || die 'Built release version does not match requested version'
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" == "$build_number" ]] \
     || die 'Built build number does not match requested build number'
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/wADB"
+lipo "$app/Contents/MacOS/wADB" -verify_arch arm64 x86_64
 codesign --verify --deep --strict --verbose=2 "$app"
 codesign -d --entitlements :- "$app" > "$output/logs/entitlements.plist" 2>/dev/null
 if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' \
