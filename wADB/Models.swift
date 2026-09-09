@@ -65,7 +65,7 @@ struct BonjourService: Hashable {
     let name: String
     let type: String
     let domain: String
-    let host: String
+    let hosts: [String]
     let targetHost: String?
     let port: UInt16
     let interfaceIndex: UInt32
@@ -79,35 +79,84 @@ struct BonjourService: Hashable {
         port: UInt16,
         interfaceIndex: UInt32
     ) {
+        self.init(
+            name: name,
+            type: type,
+            domain: domain,
+            hosts: [host],
+            targetHost: targetHost,
+            port: port,
+            interfaceIndex: interfaceIndex
+        )
+    }
+
+    init(
+        name: String,
+        type: String,
+        domain: String,
+        hosts: [String],
+        targetHost: String? = nil,
+        port: UInt16,
+        interfaceIndex: UInt32
+    ) {
+        precondition(!hosts.isEmpty, "A resolved Bonjour service must have at least one address")
         self.name = name
         self.type = type.hasSuffix(".") ? String(type.dropLast()) : type
         self.domain = domain
-        self.host = host
+        self.hosts = Self.orderedHosts(hosts)
         self.targetHost = targetHost
         self.port = port
         self.interfaceIndex = interfaceIndex
     }
 
+    var host: String { hosts[0] }
+
     var endpoint: String {
-        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+        Self.endpoint(host: host, port: port)
     }
+
+    var endpoints: [String] { hosts.map { Self.endpoint(host: $0, port: port) } }
 
     var identity: String {
         "\(name)|\(type)|\(domain)|\(interfaceIndex)"
     }
 
     var normalizedHost: String {
+        normalizedHosts[0]
+    }
+
+    var normalizedHosts: [String] { hosts.map(Self.normalizedHost) }
+
+    var normalizedTargetHost: String? {
+        guard var value = targetHost?.lowercased(), !value.isEmpty else { return nil }
+        while value.hasSuffix(".") { value.removeLast() }
+        return value
+    }
+
+    private static func endpoint(host: String, port: UInt16) -> String {
+        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+    }
+
+    private static func orderedHosts(_ hosts: [String]) -> [String] {
+        hosts.sorted { left, right in
+            let leftRank = addressRank(left)
+            let rightRank = addressRank(right)
+            return leftRank == rightRank ? left < right : leftRank < rightRank
+        }
+    }
+
+    private static func addressRank(_ host: String) -> Int {
+        guard host.contains(":") else { return 0 }
+        let unscoped = host.split(separator: "%", maxSplits: 1).first?.lowercased() ?? ""
+        return unscoped.hasPrefix("fe80:") ? 2 : 1
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
         var value = host.lowercased()
         if value.hasPrefix("[") && value.hasSuffix("]") {
             value.removeFirst()
             value.removeLast()
         }
-        while value.hasSuffix(".") { value.removeLast() }
-        return value
-    }
-
-    var normalizedTargetHost: String? {
-        guard var value = targetHost?.lowercased(), !value.isEmpty else { return nil }
         while value.hasSuffix(".") { value.removeLast() }
         return value
     }
@@ -139,7 +188,7 @@ enum BonjourCorrelator {
         services.first {
             guard $0.type == BonjourService.connectType else { return false }
             return $0.name == lastDevice.serviceName
-                || $0.normalizedHost == normalizedHost(lastDevice.host)
+                || $0.normalizedHosts.contains(normalizedHost(lastDevice.host))
         }
     }
 
@@ -158,7 +207,7 @@ enum BonjourCorrelator {
            leftTarget == rightTarget {
             return true
         }
-        return left.normalizedHost == right.normalizedHost
+        return !Set(left.normalizedHosts).isDisjoint(with: right.normalizedHosts)
     }
 }
 
@@ -267,7 +316,7 @@ enum WirelessDeviceResolver {
         if transport.serial.hasPrefix("emulator-") { return false }
         if transport.connectServiceName != nil { return true }
         if services.contains(where: {
-            $0.type == BonjourService.connectType && $0.endpoint == transport.serial
+            $0.type == BonjourService.connectType && $0.endpoints.contains(transport.serial)
         }) {
             return true
         }
@@ -288,7 +337,7 @@ enum WirelessDeviceResolver {
         if let service = BonjourCorrelator.connectService(
             for: rememberedDevice,
             among: services
-        ), transport.serial == service.endpoint
+        ), service.endpoints.contains(transport.serial)
             || transport.connectServiceName == service.name {
             return true
         }
@@ -315,7 +364,7 @@ enum WirelessDeviceResolver {
         var groups: [String: [ADBTransport]] = [:]
         for transport in transports {
             let matchingService = services.first {
-                $0.name == transport.connectServiceName || $0.endpoint == transport.serial
+                $0.name == transport.connectServiceName || $0.endpoints.contains(transport.serial)
             }
             let remembered = rememberedDevices.first {
                 matches(transport, rememberedDevice: $0, services: services)
@@ -337,7 +386,7 @@ enum WirelessDeviceResolver {
     ) -> BonjourService? {
         for transport in transports {
             if let match = services.first(where: {
-                $0.name == transport.connectServiceName || $0.endpoint == transport.serial
+                $0.name == transport.connectServiceName || $0.endpoints.contains(transport.serial)
             }) {
                 return match
             }
@@ -403,6 +452,28 @@ enum ADBWatchdogPolicy {
     }
 }
 
+enum ADBAutomaticReconnectPolicy {
+    static func shouldReconnect(
+        _ device: LastVerifiedDevice,
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> Bool {
+        !transports.contains { transport in
+            guard WirelessDeviceResolver.matches(
+                transport,
+                rememberedDevice: device,
+                services: services
+            ) else { return false }
+            switch transport.state {
+            case .authorized, .unauthorized:
+                return true
+            case .offline, .other:
+                return false
+            }
+        }
+    }
+}
+
 struct ADBConnectionRetryState: Equatable {
     private(set) var targetIdentity: String?
     private(set) var consecutiveFailures = 0
@@ -435,13 +506,15 @@ struct ADBConnectionRetryState: Equatable {
 }
 
 struct ADBConnectionTarget: Equatable {
-    let endpoint: String
+    let endpoints: [String]
     /// Stable across IPv4/IPv6 address changes, but changes when Android
     /// rotates the wireless-debugging port.
     let retryIdentity: String
 
+    var endpoint: String { endpoints[0] }
+
     init(device: LastVerifiedDevice, service: BonjourService?) {
-        endpoint = service?.endpoint ?? device.endpoint
+        endpoints = service?.endpoints ?? [device.endpoint]
         let port = service.map { String($0.port) }
             ?? Self.port(from: device.endpoint)
             ?? device.endpoint

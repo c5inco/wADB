@@ -689,7 +689,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 .compactMap { $0 }
         }
         let serviceValues = services.flatMap { service in
-            [service.name, service.host, service.targetHost, service.endpoint, service.identity]
+            ([service.name, service.targetHost, service.identity]
+                + service.hosts.map(Optional.some)
+                + service.endpoints.map(Optional.some))
                 .compactMap { $0 }
         }
         return remembered + transportValues + serviceValues
@@ -962,14 +964,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var disconnectedRememberedDevices: [LastVerifiedDevice] {
         rememberedDevices.filter { remembered in
-            !transports.contains {
-                $0.state == .authorized
-                    && WirelessDeviceResolver.matches(
-                        $0,
-                        rememberedDevice: remembered,
-                        services: services
-                    )
-            }
+            ADBAutomaticReconnectPolicy.shouldReconnect(
+                remembered,
+                transports: transports,
+                services: services
+            )
         }
     }
 
@@ -1063,34 +1062,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let hasNativeTransport = authorized.contains {
                 $0.connectServiceName == service.name
             }
-            let hasExplicitTransport = authorized.contains {
-                $0.serial == service.endpoint
-            }
-            guard hasNativeTransport,
-                  hasExplicitTransport,
-                  duplicateEndpointsBeingRemoved.insert(service.endpoint).inserted else {
-                continue
-            }
-            adb.disconnect(from: service.endpoint) { [weak self, weak adb] result in
-                guard let self else { return }
-                if case let .success(processResult) = result, processResult.status != 0 {
-                    self.logger.error(
-                        "Could not remove duplicate explicit transport: \(processResult.combinedOutput, privacy: .public)"
-                    )
-                }
-                adb?.snapshot { [weak self] snapshot in
+            guard hasNativeTransport else { continue }
+            for endpoint in service.endpoints where authorized.contains(where: { $0.serial == endpoint }) {
+                guard duplicateEndpointsBeingRemoved.insert(endpoint).inserted else { continue }
+                adb.disconnect(from: endpoint) { [weak self, weak adb] result in
                     guard let self else { return }
-                    if case let .success(transports) = snapshot { self.handleTransports(transports) }
-                    self.duplicateEndpointsBeingRemoved.remove(service.endpoint)
+                    if case let .success(processResult) = result, processResult.status != 0 {
+                        self.logger.error(
+                            "Could not remove duplicate explicit transport: \(processResult.combinedOutput, privacy: .public)"
+                        )
+                    }
+                    adb?.snapshot { [weak self] snapshot in
+                        guard let self else { return }
+                        if case let .success(transports) = snapshot { self.handleTransports(transports) }
+                        self.duplicateEndpointsBeingRemoved.remove(endpoint)
+                    }
                 }
             }
         }
     }
 
-    /// Reconnect anything remembered that is not currently authorized. A
-    /// refused endpoint backs off independently and can never affect server
-    /// health. Genuine wireless-debugging port changes are attempted
-    /// immediately; address-family churn keeps the existing backoff.
+    /// Reconnect anything remembered that is neither authorized nor awaiting
+    /// authorization. A refused endpoint backs off independently and can never
+    /// affect server health. Genuine wireless-debugging port changes are
+    /// attempted immediately; address-family churn keeps the existing backoff.
     private func reconcileWirelessConnections() {
         guard serverState.isRunning, pairingCoordinator == nil, let adb else { return }
         let disconnected = disconnectedRememberedDevices
@@ -1120,38 +1115,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard connectsInFlight.insert(endpoint).inserted else { continue }
             connectionRetries[device.serviceName] = retry
             let generation = operationGeneration
-            logger.info(
-                "Connecting \(device.displayName, privacy: .public) at \(endpoint, privacy: .public); attempt=\(retry.consecutiveFailures + 1, privacy: .public)"
+            attemptConnection(
+                device: device,
+                target: target,
+                remainingEndpoints: target.endpoints[...],
+                failures: [],
+                inFlightEndpoint: endpoint,
+                adb: adb,
+                generation: generation,
+                attemptNumber: retry.consecutiveFailures + 1
             )
-            adb.connect(to: endpoint) { [weak self] result in
-                DispatchQueue.main.async {
-                    guard let self, self.operationGeneration == generation else { return }
-                    self.connectsInFlight.remove(endpoint)
-                    switch result {
-                    case let .success(processResult):
-                        let output = processResult.combinedOutput
-                        // Empty output means the attempt was cancelled by a
-                        // state change, not that it failed.
-                        guard !output.isEmpty else { return }
-                        if ADBOutputParser.connectSucceeded(output) {
-                            self.connectionRetries.removeValue(forKey: device.serviceName)
-                        } else {
-                            self.recordConnectionFailure(
-                                output,
-                                device: device,
-                                target: target
-                            )
-                        }
-                    case let .failure(error):
-                        self.recordConnectionFailure(
-                            error.localizedDescription,
-                            device: device,
-                            target: target
-                        )
-                    }
-                }
-            }
             return
+        }
+    }
+
+    private func attemptConnection(
+        device: LastVerifiedDevice,
+        target: ADBConnectionTarget,
+        remainingEndpoints: ArraySlice<String>,
+        failures: [String],
+        inFlightEndpoint: String,
+        adb: ADBManager,
+        generation: UUID,
+        attemptNumber: Int
+    ) {
+        guard let endpoint = remainingEndpoints.first else {
+            connectsInFlight.remove(inFlightEndpoint)
+            recordConnectionFailure(
+                failures.joined(separator: "; "),
+                device: device,
+                target: target
+            )
+            return
+        }
+        logger.info(
+            "Connecting \(device.displayName, privacy: .public) at \(endpoint, privacy: .public); attempt=\(attemptNumber, privacy: .public)"
+        )
+        adb.connect(to: endpoint) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.operationGeneration == generation else { return }
+                let detail: String
+                switch result {
+                case let .success(processResult):
+                    detail = processResult.combinedOutput
+                    // Empty output means the attempt was cancelled by a state
+                    // change, not that it failed.
+                    guard !detail.isEmpty else {
+                        self.connectsInFlight.remove(inFlightEndpoint)
+                        return
+                    }
+                    if ADBOutputParser.connectSucceeded(detail) {
+                        self.connectsInFlight.remove(inFlightEndpoint)
+                        self.connectionRetries.removeValue(forKey: device.serviceName)
+                        return
+                    }
+                case let .failure(error):
+                    detail = error.localizedDescription
+                }
+                self.attemptConnection(
+                    device: device,
+                    target: target,
+                    remainingEndpoints: remainingEndpoints.dropFirst(),
+                    failures: failures + ["\(endpoint): \(detail)"],
+                    inFlightEndpoint: inFlightEndpoint,
+                    adb: adb,
+                    generation: generation,
+                    attemptNumber: attemptNumber
+                )
+            }
         }
     }
 

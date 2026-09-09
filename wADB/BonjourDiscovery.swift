@@ -252,24 +252,25 @@ final class BonjourDiscovery {
         } else {
             resolution.addresses.remove(host)
         }
-        publishLocked()
+        // DNSServiceGetAddrInfo may deliver the address families as one batch.
+        // Wait for its final callback so reconnection sees every candidate
+        // before it starts dialing the preferred address.
+        if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 {
+            publishLocked()
+        }
     }
 
     private func publishLocked() {
         let services = resolutions.values.compactMap { resolution -> BonjourService? in
             guard let port = resolution.port else { return nil }
-            let host = resolution.addresses.sorted { left, right in
-                let leftIsIPv4 = !left.contains(":")
-                let rightIsIPv4 = !right.contains(":")
-                return leftIsIPv4 == rightIsIPv4 ? left < right : leftIsIPv4
-            }.first
-            guard let host else { return nil }
+            let hosts = Array(resolution.addresses)
+            guard !hosts.isEmpty else { return nil }
             let key = resolution.key
             return BonjourService(
                 name: key.name,
                 type: key.type,
                 domain: key.domain,
-                host: host,
+                hosts: hosts,
                 targetHost: resolution.targetHost,
                 port: port,
                 interfaceIndex: key.interfaceIndex

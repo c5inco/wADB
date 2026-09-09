@@ -102,6 +102,81 @@ final class SupervisorModelTests: XCTestCase {
         XCTAssertEqual(retry.consecutiveFailures, 1)
     }
 
+    func testConnectionTargetRetainsEveryBonjourAddressInOrder() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["fe80::10%en0", "fd00::10", "192.0.2.10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            ADBConnectionTarget(device: remembered, service: service).endpoints,
+            ["192.0.2.10:43545", "[fd00::10]:43545", "[fe80::10%en0]:43545"]
+        )
+    }
+
+    func testAuthorizedAndUnauthorizedTransportsDoNotReconnectButOfflineDoes() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            host: remembered.host,
+            port: 43545,
+            interfaceIndex: 4
+        )
+
+        for state in [ADBTransportState.authorized, .unauthorized] {
+            XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldReconnect(
+                remembered,
+                transports: [ADBTransport(
+                    serial: service.endpoint,
+                    state: state,
+                    attributes: [:]
+                )],
+                services: [service]
+            ))
+        }
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.shouldReconnect(
+            remembered,
+            transports: [ADBTransport(
+                serial: service.endpoint,
+                state: .offline,
+                attributes: [:]
+            )],
+            services: [service]
+        ))
+    }
+
+    func testSecondaryBonjourEndpointSatisfiesAutomaticReconnect() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+        let secondaryTransport = ADBTransport(
+            serial: "[fd00::10]:43545",
+            state: .authorized,
+            attributes: [:]
+        )
+
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldReconnect(
+            remembered,
+            transports: [secondaryTransport],
+            services: [service]
+        ))
+        XCTAssertTrue(WirelessDeviceResolver.matches(
+            secondaryTransport,
+            rememberedDevice: remembered,
+            services: [service]
+        ))
+    }
+
     func testTemporaryBonjourDisappearanceKeepsLastLiveTarget() {
         let service = BonjourService(
             name: remembered.serviceName,
