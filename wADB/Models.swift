@@ -533,6 +533,27 @@ struct ADBConnectionFailure: Equatable {
     let detail: String
 }
 
+struct ADBRememberedEndpoint: Equatable {
+    let endpoint: String
+    let host: String
+}
+
+enum ADBRememberedEndpointResolver {
+    static func resolve(
+        service: BonjourService,
+        authorizedTransport: ADBTransport
+    ) -> ADBRememberedEndpoint {
+        if service.endpoints.contains(authorizedTransport.serial),
+           let parsed = ADBNetworkEndpoint.parse(authorizedTransport.serial) {
+            return ADBRememberedEndpoint(
+                endpoint: authorizedTransport.serial,
+                host: parsed.host
+            )
+        }
+        return ADBRememberedEndpoint(endpoint: service.endpoint, host: service.host)
+    }
+}
+
 enum ADBConnectionFailurePolicy {
     static func combinedDetail(_ failures: [ADBConnectionFailure]) -> String {
         failures.map { "\($0.endpoint): \($0.detail)" }.joined(separator: "; ")

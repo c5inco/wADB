@@ -87,6 +87,26 @@ final class BonjourCorrelationTests: XCTestCase {
         XCTAssertEqual(service.endpoint, "[fe80::1234%en0]:37001")
     }
 
+    func testPairingPersistsTheAuthorizedSecondaryBonjourEndpoint() {
+        let service = BonjourService(
+            name: "adb-connect", type: BonjourService.connectType, domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"], port: 37001, interfaceIndex: 4
+        )
+        let transport = ADBTransport(
+            serial: "[fd00::10]:37001",
+            state: .authorized,
+            attributes: [:]
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                service: service,
+                authorizedTransport: transport
+            ),
+            ADBRememberedEndpoint(endpoint: "[fd00::10]:37001", host: "fd00::10")
+        )
+    }
+
     func testPairingResolvesNewAuthorizedTransportThroughItsConnectService() {
         let pairing = BonjourService(
             name: "studio-request", type: BonjourService.pairingType, domain: "local.",

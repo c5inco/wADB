@@ -186,9 +186,13 @@ final class PairingCoordinator {
         self.connectService = connectService
         logger.info("Pairing completed with an authorized ADB transport")
         adb.cancelConnectionAttempt()
+        let rememberedEndpoint = ADBRememberedEndpointResolver.resolve(
+            service: connectService,
+            authorizedTransport: transport
+        )
         let verified = LastVerifiedDevice(
-            endpoint: connectService.endpoint,
-            host: connectService.host,
+            endpoint: rememberedEndpoint.endpoint,
+            host: rememberedEndpoint.host,
             serviceName: connectService.name,
             displayName: transport.modelDisplayName,
             fingerprint: transport.fingerprint

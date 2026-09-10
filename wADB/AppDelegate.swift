@@ -396,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isExplicitRestartInFlight = false
     private var snapshotFailureCount = 0
     private var connectsInFlight = Set<String>()
+    private var automaticReconnectGeneration = UUID()
     private var connectionRetries: [String: ADBConnectionRetryState] = [:]
     private var lastConnectionTargets: [String: ADBConnectionTarget] = [:]
     private var restartRecommendedDeviceIDs = Set<String>()
@@ -575,6 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isExplicitRestartInFlight = false
         snapshotFailureCount = 0
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -737,6 +739,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watchdogTimer = nil
         snapshotFailureCount = 0
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -787,6 +790,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snapshotFailureCount = 0
         transports = []
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -1115,6 +1119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard connectsInFlight.insert(endpoint).inserted else { continue }
             connectionRetries[device.serviceName] = retry
             let generation = operationGeneration
+            let reconnectGeneration = automaticReconnectGeneration
             attemptConnection(
                 device: device,
                 target: target,
@@ -1123,6 +1128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 inFlightEndpoint: endpoint,
                 adb: adb,
                 generation: generation,
+                reconnectGeneration: reconnectGeneration,
                 attemptNumber: retry.consecutiveFailures + 1
             )
             return
@@ -1137,6 +1143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         inFlightEndpoint: String,
         adb: ADBManager,
         generation: UUID,
+        reconnectGeneration: UUID,
         attemptNumber: Int
     ) {
         guard let endpoint = remainingEndpoints.first else {
@@ -1153,7 +1160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         adb.connect(to: endpoint) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self, self.operationGeneration == generation else { return }
+                guard let self,
+                      self.operationGeneration == generation,
+                      self.automaticReconnectGeneration == reconnectGeneration else { return }
                 let detail: String
                 switch result {
                 case let .success(processResult):
@@ -1183,6 +1192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     inFlightEndpoint: inFlightEndpoint,
                     adb: adb,
                     generation: generation,
+                    reconnectGeneration: reconnectGeneration,
                     attemptNumber: attemptNumber
                 )
             }
@@ -1286,6 +1296,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func pairNewDevice() {
         guard serverState.isRunning, pairingCoordinator == nil, let adb else { return }
+        // Invalidate the whole automatic failover sequence before pairing can
+        // use ADBManager's shared connect slot. A stale endpoint callback must
+        // not start another connect and terminate the pairing connection.
+        automaticReconnectGeneration = UUID()
+        connectsInFlight.removeAll()
+        adb.cancelConnectionAttempt()
         let coordinator = PairingCoordinator(adb: adb) { [weak self] result in
             guard let self else { return }
             self.pairingCoordinator = nil
