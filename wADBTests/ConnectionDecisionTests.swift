@@ -408,6 +408,45 @@ final class SupervisorModelTests: XCTestCase {
         ))
     }
 
+    func testRememberedServiceNameBeatsAnotherDeviceOnTheRememberedHost() {
+        // "adb-aaa" sorts before the remembered service and now advertises the
+        // remembered host after DHCP reassignment. Identity must still win.
+        let impostor = BonjourService(
+            name: "adb-aaa",
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+        let exact = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.77", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            BonjourCorrelator.connectService(for: remembered, among: [impostor, exact]),
+            exact
+        )
+        XCTAssertEqual(
+            ADBConnectionTargetResolver.resolve(
+                device: remembered,
+                services: [impostor, exact],
+                previous: nil
+            ).endpoints,
+            ["192.0.2.77:36203", "[fd00::10]:36203"]
+        )
+        // Host fallback still applies when no service carries the name.
+        XCTAssertEqual(
+            BonjourCorrelator.connectService(for: remembered, among: [impostor]),
+            impostor
+        )
+    }
+
     func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
         let failures = [
             ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),

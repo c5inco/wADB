@@ -181,15 +181,20 @@ enum BonjourCorrelator {
         return sameHost.count == 1 ? sameHost.first : nil
     }
 
+    /// The device's own service name is the identity; a host match is only a
+    /// fallback for older ADB Wi-Fi builds that advertise no stable name. The
+    /// exact name is checked across every service first, because after DHCP
+    /// another device can advertise the remembered host and sort earlier.
     static func connectService(
         for lastDevice: LastVerifiedDevice,
         among services: [BonjourService]
     ) -> BonjourService? {
-        services.first {
-            guard $0.type == BonjourService.connectType else { return false }
-            return $0.name == lastDevice.serviceName
-                || $0.normalizedHosts.contains(normalizedHost(lastDevice.host))
+        let connectServices = services.filter { $0.type == BonjourService.connectType }
+        if let exact = connectServices.first(where: { $0.name == lastDevice.serviceName }) {
+            return exact
         }
+        let host = normalizedHost(lastDevice.host)
+        return connectServices.first { $0.normalizedHosts.contains(host) }
     }
 
     private static func normalizedHost(_ host: String) -> String {
