@@ -25,6 +25,32 @@ enum ADBOutputParser {
         output.lowercased().contains("failed to authenticate")
     }
 
+    /// `adb connect` appends a reason when the socket itself fails
+    /// ("failed to connect to '<endpoint>': Connection refused"). When TCP
+    /// succeeds but the phone rejects the TLS handshake, the server prints
+    /// only "failed to connect to <endpoint>". The missing reason is the one
+    /// client-visible hint that the phone reached this host and turned it
+    /// away.
+    static func connectWasRejectedWithoutReason(_ output: String) -> Bool {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard lines.count == 1 else { return false }
+        let line = lines[0].lowercased()
+        let prefix = "failed to connect to "
+        guard line.hasPrefix(prefix) else { return false }
+        var remainder = Substring(line.dropFirst(prefix.count))
+        if remainder.hasPrefix("'") {
+            remainder = remainder.dropFirst()
+            guard let closingQuote = remainder.firstIndex(of: "'") else { return false }
+            let trailing = remainder[remainder.index(after: closingQuote)...]
+            return trailing.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        // An endpoint never contains whitespace; an appended reason always does.
+        return !remainder.isEmpty && !remainder.contains(where: \.isWhitespace)
+    }
+
     static func parseDeviceList(_ output: String) -> [ADBTransport] {
         output.split(whereSeparator: \.isNewline).compactMap { line in
             parseTransportLine(String(line))

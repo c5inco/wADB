@@ -400,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var connectionRetries: [String: ADBConnectionRetryState] = [:]
     private var lastConnectionTargets: [String: ADBConnectionTarget] = [:]
     private var restartRecommendedDeviceIDs = Set<String>()
+    /// Remembered devices whose phone rejects every handshake; reconnects
+    /// pause until a new pairing or an authorized transport clears them.
+    private var pairingRequiredDeviceIDs = Set<String>()
     private var reachabilityChecksInFlight = Set<String>()
     private var environmentRefreshWorkItem: DispatchWorkItem?
     private var duplicateEndpointsBeingRemoved = Set<String>()
@@ -580,6 +583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
+        pairingRequiredDeviceIDs.removeAll()
         reachabilityChecksInFlight.removeAll()
         environmentRefreshWorkItem?.cancel()
         environmentRefreshWorkItem = nil
@@ -743,6 +747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
+        pairingRequiredDeviceIDs.removeAll()
         reachabilityChecksInFlight.removeAll()
         environmentRefreshWorkItem?.cancel()
         environmentRefreshWorkItem = nil
@@ -794,6 +799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
+        pairingRequiredDeviceIDs.removeAll()
         reachabilityChecksInFlight.removeAll()
         duplicateEndpointsBeingRemoved.removeAll()
         pairingCoordinator?.cancel()
@@ -1036,17 +1042,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         self.transports = transports
         rememberAuthorizedEndpoints(from: transports)
-        let connectedRememberedIDs = Set(rememberedDevices.compactMap { remembered in
-            transports.contains {
-                $0.state == .authorized
-                    && WirelessDeviceResolver.matches(
-                        $0,
-                        rememberedDevice: remembered,
-                        services: services
-                    )
-            } ? remembered.serviceName : nil
-        })
+        let connectedRememberedIDs = WirelessDeviceResolver.authorizedRememberedIDs(
+            transports: transports,
+            services: services,
+            rememberedDevices: rememberedDevices
+        )
         restartRecommendedDeviceIDs.subtract(connectedRememberedIDs)
+        pairingRequiredDeviceIDs.subtract(connectedRememberedIDs)
         pairingCoordinator?.update(transports: transports)
         removeDuplicateExplicitConnections(from: transports)
         let connectedCount = wirelessDevices.filter { $0.state == .connected }.count
@@ -1129,9 +1131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             if previousTarget?.retryIdentity != target.retryIdentity {
                 restartRecommendedDeviceIDs.remove(device.serviceName)
+                pairingRequiredDeviceIDs.remove(device.serviceName)
             }
             lastConnectionTargets[device.serviceName] = target
-            guard !restartRecommendedDeviceIDs.contains(device.serviceName) else { continue }
+            guard !restartRecommendedDeviceIDs.contains(device.serviceName),
+                  !pairingRequiredDeviceIDs.contains(device.serviceName) else { continue }
             let endpoint = target.endpoint
             var retry = connectionRetries[device.serviceName] ?? ADBConnectionRetryState()
             guard retry.shouldAttempt(targetIdentity: target.retryIdentity, now: Date()) else {
@@ -1268,21 +1272,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logger.error(
             "Connect failed for \(device.displayName, privacy: .public) at \(target.endpoint, privacy: .public); retrying in \(Int(delay), privacy: .public)s: \(detail, privacy: .public)"
         )
-        if let recoveryDetail = ADBConnectionFailurePolicy.recoveryDetail(
-            for: target.endpoint,
-            failures: failures
-        ) {
-            evaluateRestartRecommendation(
-                failureDetail: recoveryDetail,
-                device: device,
-                target: target,
-                retry: retry
-            )
-        }
+        evaluateRecoveryRecommendation(
+            failures: failures,
+            device: device,
+            target: target,
+            retry: retry
+        )
     }
 
-    private func evaluateRestartRecommendation(
-        failureDetail: String,
+    /// Both recommendations rest on the same TCP probe of the preferred
+    /// address; the policy decides which one a successful probe confirms.
+    private func evaluateRecoveryRecommendation(
+        failures: [ADBConnectionFailure],
         device: LastVerifiedDevice,
         target: ADBConnectionTarget,
         retry: ADBConnectionRetryState
@@ -1291,12 +1292,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for: device,
             among: services
         ) != nil
-        guard ADBDeviceRecoveryPolicy.shouldCheckEndpoint(
+        let action = ADBDeviceRecoveryPolicy.recoveryToConfirm(
             consecutiveFailures: retry.consecutiveFailures,
-            failureDetail: failureDetail,
+            failures: failures,
+            probedEndpoint: target.endpoint,
             hasAdvertisedService: hasAdvertisedService
-        ), !restartRecommendedDeviceIDs.contains(device.serviceName),
-           reachabilityChecksInFlight.insert(device.serviceName).inserted else { return }
+        )
+        guard action != .none,
+              !restartRecommendedDeviceIDs.contains(device.serviceName),
+              !pairingRequiredDeviceIDs.contains(device.serviceName),
+              reachabilityChecksInFlight.insert(device.serviceName).inserted else { return }
         let generation = operationGeneration
         checkEndpointReachable(target.endpoint) { [weak self] reachable in
             guard let self else { return }
@@ -1306,10 +1311,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   self.serverState.isRunning,
                   self.connectionRetries[device.serviceName]?.targetIdentity
                     == target.retryIdentity else { return }
-            self.restartRecommendedDeviceIDs.insert(device.serviceName)
-            self.logger.error(
-                "Standard ADB cannot reach \(device.displayName, privacy: .public) even though \(target.endpoint, privacy: .public) accepts TCP connections; recommending an explicit restart"
-            )
+            switch action {
+            case .restartServer:
+                self.restartRecommendedDeviceIDs.insert(device.serviceName)
+                self.logger.error(
+                    "Standard ADB cannot reach \(device.displayName, privacy: .public) even though \(target.endpoint, privacy: .public) accepts TCP connections; recommending an explicit restart"
+                )
+            case .needsPairing:
+                self.pairingRequiredDeviceIDs.insert(device.serviceName)
+                self.logger.error(
+                    "\(device.displayName, privacy: .public) accepts TCP at \(target.endpoint, privacy: .public) but rejects every ADB handshake; the phone has likely forgotten this host, so reconnects pause until it is paired again"
+                )
+            case .none:
+                return
+            }
             self.updateMenuState()
         }
     }
@@ -1369,6 +1384,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if case let .success(device) = result {
                 PairedDeviceStore.upsert(device)
                 self.rememberedDevices = PairedDeviceStore.load()
+                // A fresh pairing supersedes any "needs pairing" verdict for
+                // this device, including one recorded under a service name
+                // that upsert just replaced.
+                let rememberedIDs = Set(self.rememberedDevices.map(\.serviceName))
+                self.pairingRequiredDeviceIDs = self.pairingRequiredDeviceIDs
+                    .intersection(rememberedIDs)
+                    .subtracting([device.serviceName])
+                self.connectionRetries.removeValue(forKey: device.serviceName)
                 adb.snapshot { [weak self] snapshot in
                     if case let .success(transports) = snapshot {
                         self?.handleTransports(transports)
@@ -1449,13 +1472,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             services: services,
             rememberedDevices: rememberedDevices
         ).map { device in
-            guard device.state == .connecting,
-                  restartRecommendedDeviceIDs.contains(device.id) else { return device }
+            guard device.state == .connecting else { return device }
+            let state: WirelessDeviceState
+            if restartRecommendedDeviceIDs.contains(device.id) {
+                state = .restartRecommended
+            } else if pairingRequiredDeviceIDs.contains(device.id) {
+                state = .needsPairing
+            } else {
+                return device
+            }
             return WirelessDevice(
                 id: device.id,
                 displayName: device.displayName,
                 endpoint: device.endpoint,
-                state: .restartRecommended
+                state: state
             )
         }
     }

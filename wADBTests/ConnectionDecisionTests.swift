@@ -554,26 +554,158 @@ final class SupervisorModelTests: XCTestCase {
     }
 
     func testRestartRecommendationRequiresRepeatedRouteFailuresAndBonjour() {
-        XCTAssertFalse(ADBDeviceRecoveryPolicy.shouldCheckEndpoint(
+        let routeFailure = [ADBConnectionFailure(
+            endpoint: "192.0.2.10:43545",
+            detail: "failed to connect to '192.0.2.10:43545': No route to host"
+        )]
+
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
             consecutiveFailures: 1,
-            failureDetail: "No route to host",
+            failures: routeFailure,
+            probedEndpoint: "192.0.2.10:43545",
             hasAdvertisedService: true
-        ))
-        XCTAssertFalse(ADBDeviceRecoveryPolicy.shouldCheckEndpoint(
+        ), .none)
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
             consecutiveFailures: 2,
-            failureDetail: "No route to host",
+            failures: routeFailure,
+            probedEndpoint: "192.0.2.10:43545",
             hasAdvertisedService: false
-        ))
-        XCTAssertFalse(ADBDeviceRecoveryPolicy.shouldCheckEndpoint(
+        ), .none)
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
             consecutiveFailures: 2,
-            failureDetail: "failed to authenticate",
+            failures: [ADBConnectionFailure(
+                endpoint: "192.0.2.10:43545",
+                detail: "failed to authenticate to 192.0.2.10:43545"
+            )],
+            probedEndpoint: "192.0.2.10:43545",
             hasAdvertisedService: true
-        ))
-        XCTAssertTrue(ADBDeviceRecoveryPolicy.shouldCheckEndpoint(
+        ), .none)
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
             consecutiveFailures: 2,
-            failureDetail: "failed to connect: No route to host",
+            failures: routeFailure,
+            probedEndpoint: "192.0.2.10:43545",
             hasAdvertisedService: true
+        ), .restartServer)
+    }
+
+    // Pixel 10 Pro, Android 17: after the phone forgot this host, every
+    // advertised address accepted TCP, and adb reported a bare
+    // "failed to connect" for each one because the TLS handshake was
+    // rejected with SSLV3_ALERT_CERTIFICATE_UNKNOWN.
+    private let revokedFailures = [
+        ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "failed to connect to 192.0.2.10:43545"),
+        ADBConnectionFailure(endpoint: "[fd00::10]:43545", detail: "failed to connect to [fd00::10]:43545\n"),
+        ADBConnectionFailure(endpoint: "[fd00::11]:43545", detail: "failed to connect to [fd00::11]:43545"),
+        ADBConnectionFailure(endpoint: "[fe80::10%en0]:43545", detail: "failed to connect to [fe80::10%en0]:43545"),
+    ]
+
+    func testRevokedPairingIsRecognizedOnlyAfterThreeFullyRejectedRounds() {
+        for failures in 1..<ADBDeviceRecoveryPolicy.failuresBeforePairingRecommendation {
+            XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+                consecutiveFailures: failures,
+                failures: revokedFailures,
+                probedEndpoint: "192.0.2.10:43545",
+                hasAdvertisedService: true
+            ), .none, "round \(failures)")
+        }
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 3,
+            failures: revokedFailures,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: true
+        ), .needsPairing)
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 7,
+            failures: revokedFailures,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: true
+        ), .needsPairing)
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 3,
+            failures: revokedFailures,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: false
+        ), .none)
+    }
+
+    func testMixedAddressFailuresNeverSuggestPairing() {
+        // One address failed at the socket level; the phone did not reject
+        // every handshake, so keep retrying.
+        let mixed = Array(revokedFailures.dropLast()) + [ADBConnectionFailure(
+            endpoint: "[fe80::10%en0]:43545",
+            detail: "failed to connect to '[fe80::10%en0]:43545': Connection refused"
+        )]
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 5,
+            failures: mixed,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: true
+        ), .none)
+
+        // Wireless debugging switched off: the port is closed everywhere.
+        let refused = revokedFailures.map {
+            ADBConnectionFailure(
+                endpoint: $0.endpoint,
+                detail: "failed to connect to '\($0.endpoint)': Connection refused"
+            )
+        }
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 5,
+            failures: refused,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: true
+        ), .none)
+
+        // A route failure on the preferred address still means restart, even
+        // when the other addresses were rejected without a reason.
+        let routeFirst = [ADBConnectionFailure(
+            endpoint: "192.0.2.10:43545",
+            detail: "failed to connect to '192.0.2.10:43545': No route to host"
+        )] + Array(revokedFailures.dropFirst())
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 3,
+            failures: routeFirst,
+            probedEndpoint: "192.0.2.10:43545",
+            hasAdvertisedService: true
+        ), .restartServer)
+
+        // The probed address must be among the failures at all.
+        XCTAssertEqual(ADBDeviceRecoveryPolicy.recoveryToConfirm(
+            consecutiveFailures: 3,
+            failures: revokedFailures,
+            probedEndpoint: "192.0.2.99:43545",
+            hasAdvertisedService: true
+        ), .none)
+    }
+
+    func testAuthorizedTransportClearsPerDeviceRecoveryVerdicts() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+        var pairingRequired: Set<String> = [remembered.serviceName, "other-phone"]
+
+        pairingRequired.subtract(WirelessDeviceResolver.authorizedRememberedIDs(
+            transports: [ADBTransport(serial: "[fd00::10]:43545", state: .unauthorized, attributes: [:])],
+            services: [service],
+            rememberedDevices: [remembered]
         ))
+        XCTAssertEqual(pairingRequired, [remembered.serviceName, "other-phone"])
+
+        pairingRequired.subtract(WirelessDeviceResolver.authorizedRememberedIDs(
+            transports: [ADBTransport(serial: "[fd00::10]:43545", state: .authorized, attributes: [:])],
+            services: [service],
+            rememberedDevices: [remembered]
+        ))
+        XCTAssertEqual(pairingRequired, ["other-phone"])
+    }
+
+    func testNeedsPairingRowTitle() {
+        XCTAssertEqual(WirelessDeviceState.needsPairing.title, "Needs pairing")
     }
 
     func testRestartRecommendationHasExplicitRowTitle() {
