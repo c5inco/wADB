@@ -237,6 +237,15 @@ struct WirelessDevice: Equatable {
     let displayName: String
     let endpoint: String?
     let state: WirelessDeviceState
+    /// The remembered device this row stands for, when there is one. The row
+    /// `id` follows the live Bonjour name, which differs from the remembered
+    /// name whenever the device was correlated by host fallback.
+    var rememberedServiceName: String? = nil
+
+    /// The key per-device recovery verdicts (restart ADB, needs pairing) are
+    /// recorded under. Reconnect records them by remembered service name, so
+    /// every lookup that starts from a row goes through this, never `id`.
+    var recoveryID: String { rememberedServiceName ?? id }
 }
 
 enum WirelessDeviceResolver {
@@ -287,7 +296,8 @@ enum WirelessDeviceResolver {
                 id: id,
                 displayName: displayName,
                 endpoint: service?.endpoint ?? remembered?.endpoint ?? endpoint(from: representative.serial),
-                state: state
+                state: state,
+                rememberedServiceName: remembered?.serviceName
             )
         }
 
@@ -301,7 +311,8 @@ enum WirelessDeviceResolver {
                 id: service.name,
                 displayName: remembered.displayName,
                 endpoint: service.endpoint,
-                state: .connecting
+                state: .connecting,
+                rememberedServiceName: remembered.serviceName
             )
         }
 

@@ -1474,9 +1474,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ).map { device in
             guard device.state == .connecting else { return device }
             let state: WirelessDeviceState
-            if restartRecommendedDeviceIDs.contains(device.id) {
+            if restartRecommendedDeviceIDs.contains(device.recoveryID) {
                 state = .restartRecommended
-            } else if pairingRequiredDeviceIDs.contains(device.id) {
+            } else if pairingRequiredDeviceIDs.contains(device.recoveryID) {
                 state = .needsPairing
             } else {
                 return device
@@ -1485,7 +1485,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 id: device.id,
                 displayName: device.displayName,
                 endpoint: device.endpoint,
-                state: state
+                state: state,
+                rememberedServiceName: device.rememberedServiceName
             )
         }
     }
@@ -1524,7 +1525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     item.title = "\(device.displayName), \(device.state.title)"
                     item.toolTip = device.endpoint
                     let onActivate: (() -> Void)? = device.state == .restartRecommended
-                        ? { [weak self] in self?.restartADBForDevice(device.id) }
+                        ? { [weak self] in self?.restartADBForDevice(device.recoveryID) }
                         : nil
                     item.view = WirelessDeviceMenuItemView(
                         device: device,

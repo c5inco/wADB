@@ -955,10 +955,42 @@ final class SupervisorModelTests: XCTestCase {
                     id: service.name,
                     displayName: remembered.displayName,
                     endpoint: service.endpoint,
-                    state: .connecting
+                    state: .connecting,
+                    rememberedServiceName: remembered.serviceName
                 ),
             ]
         )
+    }
+
+    func testHostFallbackRowsCarryTheRememberedRecoveryKey() {
+        // The phone now advertises under a different Bonjour name on the
+        // remembered host. Rows are named after the live service, but restart
+        // and needs-pairing verdicts are recorded under the remembered name.
+        let port = ADBNetworkEndpoint.parse(remembered.endpoint)!.port
+        let renamed = BonjourService(
+            name: "adb-phone-renamed",
+            type: BonjourService.connectType,
+            domain: "local.",
+            host: remembered.host,
+            port: port,
+            interfaceIndex: 4
+        )
+
+        let advertisedOnly = WirelessDeviceResolver.resolve(
+            transports: [],
+            services: [renamed],
+            rememberedDevices: [remembered]
+        )
+        XCTAssertEqual(advertisedOnly.map(\.id), [renamed.name])
+        XCTAssertEqual(advertisedOnly.map(\.recoveryID), [remembered.serviceName])
+
+        let withOfflineTransport = WirelessDeviceResolver.resolve(
+            transports: [ADBTransport(serial: remembered.endpoint, state: .offline, attributes: [:])],
+            services: [renamed],
+            rememberedDevices: [remembered]
+        )
+        XCTAssertFalse(withOfflineTransport.isEmpty)
+        XCTAssertTrue(withOfflineTransport.allSatisfy { $0.recoveryID == remembered.serviceName })
     }
 
     func testUnknownBonjourDeviceIsNotPresentedWithoutATransport() {
