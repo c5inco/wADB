@@ -187,9 +187,73 @@ final class SupervisorModelTests: XCTestCase {
         XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldContinueFailover(
             remembered,
             attemptedEndpoint: transport.serial,
+            failureDetail: "failed to connect to [fd00::10]:43545",
             transports: [transport],
             services: []
         ))
+    }
+
+    func testFailoverStopsWhenConnectReportsAuthenticationFailure() {
+        // adb reports the authentication failure before the tracker publishes
+        // the unauthorized transport, so the snapshot is still empty here.
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: "192.0.2.10:36203",
+            failureDetail: "failed to authenticate to 192.0.2.10:36203",
+            transports: [],
+            services: []
+        ))
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: "192.0.2.10:36203",
+            failureDetail: "failed to connect to 192.0.2.10:36203",
+            transports: [],
+            services: []
+        ))
+    }
+
+    func testReconcileIgnoresAnotherPhoneThatInheritedTheRememberedAddress() {
+        // DHCP handed the offline phone's old address to a different paired
+        // phone. Its service advertises the remembered host, and its transport
+        // could even share a fingerprint, but neither is this device.
+        let otherPhone = LastVerifiedDevice(
+            endpoint: "192.0.2.10:41000",
+            host: "192.0.2.10",
+            serviceName: "adb-other",
+            displayName: "Other Phone",
+            fingerprint: remembered.fingerprint
+        )
+        let otherService = BonjourService(
+            name: otherPhone.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::20"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+        let transport = ADBTransport(
+            serial: "[fd00::20]:41000",
+            state: .authorized,
+            attributes: ["product": "example", "model": "Example_Phone", "device": "example"]
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered, otherPhone],
+                transports: [transport],
+                services: [otherService]
+            ),
+            [
+                remembered,
+                LastVerifiedDevice(
+                    endpoint: "[fd00::20]:41000",
+                    host: "fd00::20",
+                    serviceName: otherPhone.serviceName,
+                    displayName: otherPhone.displayName,
+                    fingerprint: otherPhone.fingerprint
+                ),
+            ]
+        )
     }
 
     func testSuccessfulSecondaryConnectionUpdatesRememberedEndpoint() {

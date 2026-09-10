@@ -473,13 +473,19 @@ enum ADBAutomaticReconnectPolicy {
         }
     }
 
+    /// Whether a failed dial should move on to the next advertised address.
+    /// Authorization is the one failure that must not fail over: `adb connect`
+    /// reports it before the tracker publishes the unauthorized transport, so
+    /// the failure text is checked as well as the transport snapshot.
     static func shouldContinueFailover(
         _ device: LastVerifiedDevice,
         attemptedEndpoint: String,
+        failureDetail: String,
         transports: [ADBTransport],
         services: [BonjourService]
     ) -> Bool {
-        !transports.contains { transport in
+        guard !ADBOutputParser.connectRequiresAuthorization(failureDetail) else { return false }
+        return !transports.contains { transport in
             guard transport.state == .authorized || transport.state == .unauthorized else {
                 return false
             }
@@ -595,6 +601,13 @@ enum ADBRememberedEndpointResolver {
     /// connected it: pairing, automatic failover, or an `adb connect` issued
     /// outside wADB. A matching transport on the stored endpoint always wins so
     /// dual-stack devices do not flip between addresses.
+    ///
+    /// Only exact identity counts here: the stored endpoint itself, or an
+    /// address advertised under the device's own Bonjour service name. The
+    /// host and fingerprint heuristics that `WirelessDeviceResolver.matches`
+    /// uses for display are deliberately excluded, because persisting a fuzzy
+    /// match after DHCP hands one phone's address to another would let
+    /// `PairedDeviceStore.upsert` overwrite the other phone's record.
     static func reconcile(
         _ devices: [LastVerifiedDevice],
         transports: [ADBTransport],
@@ -604,16 +617,25 @@ enum ADBRememberedEndpointResolver {
             let matching = transports.filter { transport in
                 transport.state == .authorized
                     && ADBNetworkEndpoint.parse(transport.serial) != nil
-                    && WirelessDeviceResolver.matches(
-                        transport,
-                        rememberedDevice: device,
-                        services: services
-                    )
+                    && isExactEndpoint(transport.serial, of: device, services: services)
             }
             guard !matching.contains(where: { $0.serial == device.endpoint }),
                   let transport = matching.first else { return device }
             return resolve(device: device, connectedEndpoint: transport.serial)
         }
+    }
+
+    private static func isExactEndpoint(
+        _ endpoint: String,
+        of device: LastVerifiedDevice,
+        services: [BonjourService]
+    ) -> Bool {
+        endpoint == device.endpoint
+            || services.contains {
+                $0.type == BonjourService.connectType
+                    && $0.name == device.serviceName
+                    && $0.endpoints.contains(endpoint)
+            }
     }
 
     static func resolve(

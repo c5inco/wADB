@@ -1214,6 +1214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard ADBAutomaticReconnectPolicy.shouldContinueFailover(
                     device,
                     attemptedEndpoint: endpoint,
+                    failureDetail: detail,
                     transports: self.transports,
                     services: self.services
                 ) else {
