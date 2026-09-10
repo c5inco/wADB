@@ -238,6 +238,13 @@ final class BonjourDiscovery {
     ) {
         guard errorCode == kDNSServiceErr_NoError, let address,
               var host = Self.numericHost(address) else {
+            if Self.shouldPublishAddressResults(
+                flags: flags,
+                errorCode: errorCode,
+                hasResolvedAddresses: !resolution.addresses.isEmpty
+            ) {
+                publishLocked()
+            }
             if errorCode != kDNSServiceErr_NoError {
                 DispatchQueue.main.async { self.onError?(BonjourDiscoveryError.resolveFailed(errorCode)) }
             }
@@ -255,9 +262,22 @@ final class BonjourDiscovery {
         // DNSServiceGetAddrInfo may deliver the address families as one batch.
         // Wait for its final callback so reconnection sees every candidate
         // before it starts dialing the preferred address.
-        if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 {
+        if Self.shouldPublishAddressResults(
+            flags: flags,
+            errorCode: errorCode,
+            hasResolvedAddresses: !resolution.addresses.isEmpty
+        ) {
             publishLocked()
         }
+    }
+
+    static func shouldPublishAddressResults(
+        flags: DNSServiceFlags,
+        errorCode: DNSServiceErrorType,
+        hasResolvedAddresses: Bool
+    ) -> Bool {
+        guard flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 else { return false }
+        return errorCode == kDNSServiceErr_NoError || hasResolvedAddresses
     }
 
     private func publishLocked() {

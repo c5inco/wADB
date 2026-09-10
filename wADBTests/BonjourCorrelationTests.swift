@@ -1,7 +1,26 @@
 import XCTest
+import dnssd
 @testable import wADB
 
 final class BonjourCorrelationTests: XCTestCase {
+    func testAddressBatchPublishesUsableResultsWhenOtherFamilyEndsWithError() {
+        XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
+            flags: DNSServiceFlags(kDNSServiceFlagsMoreComing),
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoError),
+            hasResolvedAddresses: true
+        ))
+        XCTAssertTrue(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: true
+        ))
+        XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: false
+        ))
+    }
+
     func testServiceTypeNormalizesDNSServiceTrailingDot() {
         let service = BonjourService(
             name: "adb-connect", type: "_adb-tls-connect._tcp.", domain: "local.",
