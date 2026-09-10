@@ -208,6 +208,110 @@ final class SupervisorModelTests: XCTestCase {
         )
     }
 
+    func testAuthorizedSecondaryTransportUpdatesRememberedEndpoint() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+        let transport = ADBTransport(serial: "[fd00::10]:36203", state: .authorized, attributes: [:])
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: [transport],
+                services: [service]
+            ),
+            [LastVerifiedDevice(
+                endpoint: "[fd00::10]:36203",
+                host: "fd00::10",
+                serviceName: remembered.serviceName,
+                displayName: remembered.displayName,
+                fingerprint: remembered.fingerprint
+            )]
+        )
+    }
+
+    func testRememberedEndpointKeepsStoredAddressWhenItIsStillAuthorized() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+        let transports = [
+            ADBTransport(serial: "[fd00::10]:36203", state: .authorized, attributes: [:]),
+            ADBTransport(serial: "192.0.2.10:36203", state: .authorized, attributes: [:]),
+        ]
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: transports,
+                services: [service]
+            ),
+            [remembered]
+        )
+    }
+
+    func testNativeAndUnauthorizedTransportsDoNotRewriteRememberedEndpoint() {
+        let transports = [
+            ADBTransport(
+                serial: "\(remembered.serviceName).\(BonjourService.connectType)",
+                state: .authorized,
+                attributes: [:]
+            ),
+            ADBTransport(serial: "[fd00::10]:36203", state: .unauthorized, attributes: [:]),
+        ]
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: transports,
+                services: []
+            ),
+            [remembered]
+        )
+    }
+
+    func testFailoverStopsWhenBonjourRepublishesTheTargetMidSequence() {
+        func service(port: UInt16, hosts: [String]) -> BonjourService {
+            BonjourService(
+                name: remembered.serviceName,
+                type: BonjourService.connectType,
+                domain: "local.",
+                hosts: hosts,
+                port: port,
+                interfaceIndex: 4
+            )
+        }
+        let original = service(port: 36203, hosts: ["192.0.2.10", "fd00::10"])
+        let target = ADBConnectionTarget(device: remembered, service: original)
+
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target, device: remembered, services: [original]
+        ))
+        // A transient empty publish keeps the sequence alive.
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target, device: remembered, services: []
+        ))
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target,
+            device: remembered,
+            services: [service(port: 40001, hosts: ["192.0.2.10", "fd00::10"])]
+        ))
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target,
+            device: remembered,
+            services: [service(port: 36203, hosts: ["192.0.2.10"])]
+        ))
+    }
+
     func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
         let failures = [
             ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),

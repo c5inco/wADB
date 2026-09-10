@@ -491,6 +491,23 @@ enum ADBAutomaticReconnectPolicy {
                 )
         }
     }
+
+    /// A failover sequence dials the endpoint list it started with. When
+    /// Bonjour republishes the device with a rotated port or a different
+    /// address set mid-sequence, the remaining endpoints are stale and the
+    /// sequence should stop so reconciliation can start over from the live
+    /// target. A transient empty publish keeps the current target.
+    static func targetIsCurrent(
+        _ target: ADBConnectionTarget,
+        device: LastVerifiedDevice,
+        services: [BonjourService]
+    ) -> Bool {
+        ADBConnectionTargetResolver.resolve(
+            device: device,
+            services: services,
+            previous: target
+        ) == target
+    }
 }
 
 struct ADBConnectionRetryState: Equatable {
@@ -570,6 +587,33 @@ enum ADBRememberedEndpointResolver {
             )
         }
         return ADBRememberedEndpoint(endpoint: service.endpoint, host: service.host)
+    }
+
+    /// Re-derives every remembered endpoint from the transports ADB actually
+    /// reports as authorized. This is the single place that keeps remembered
+    /// devices in step with the transport that authorized, whichever path
+    /// connected it: pairing, automatic failover, or an `adb connect` issued
+    /// outside wADB. A matching transport on the stored endpoint always wins so
+    /// dual-stack devices do not flip between addresses.
+    static func reconcile(
+        _ devices: [LastVerifiedDevice],
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> [LastVerifiedDevice] {
+        devices.map { device in
+            let matching = transports.filter { transport in
+                transport.state == .authorized
+                    && ADBNetworkEndpoint.parse(transport.serial) != nil
+                    && WirelessDeviceResolver.matches(
+                        transport,
+                        rememberedDevice: device,
+                        services: services
+                    )
+            }
+            guard !matching.contains(where: { $0.serial == device.endpoint }),
+                  let transport = matching.first else { return device }
+            return resolve(device: device, connectedEndpoint: transport.serial)
+        }
     }
 
     static func resolve(

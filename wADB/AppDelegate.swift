@@ -1035,6 +1035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         self.transports = transports
+        rememberAuthorizedEndpoints(from: transports)
         let connectedRememberedIDs = Set(rememberedDevices.compactMap { remembered in
             transports.contains {
                 $0.state == .authorized
@@ -1057,6 +1058,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         reconcileWirelessConnections()
         updateMenuState()
+    }
+
+    /// Keeps remembered endpoints in step with the transport ADB actually
+    /// authorized, whichever path connected it. Without this a device that
+    /// authorized on a secondary address, or through an `adb connect` issued
+    /// outside wADB, stops matching its remembered entry once Bonjour data is
+    /// gone and gets reconnected on top of a live transport.
+    private func rememberAuthorizedEndpoints(from transports: [ADBTransport]) {
+        let reconciled = ADBRememberedEndpointResolver.reconcile(
+            rememberedDevices,
+            transports: transports,
+            services: services
+        )
+        guard reconciled != rememberedDevices else { return }
+        for (previous, current) in zip(rememberedDevices, reconciled) where previous != current {
+            logger.info(
+                "Remembering \(current.displayName, privacy: .public) at \(current.endpoint, privacy: .public)"
+            )
+            PairedDeviceStore.upsert(current)
+        }
+        rememberedDevices = PairedDeviceStore.load()
     }
 
     private func removeDuplicateExplicitConnections(from transports: [ADBTransport]) {
@@ -1197,6 +1219,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ) else {
                     self.connectsInFlight.remove(inFlightEndpoint)
                     self.connectionRetries.removeValue(forKey: device.serviceName)
+                    return
+                }
+                guard ADBAutomaticReconnectPolicy.targetIsCurrent(
+                    target,
+                    device: device,
+                    services: self.services
+                ) else {
+                    // Bonjour republished the device mid-sequence. The remaining
+                    // endpoints are stale, so stop without charging a retry and
+                    // let reconciliation start again from the live target.
+                    self.logger.info(
+                        "Abandoning stale reconnect sequence for \(device.displayName, privacy: .public)"
+                    )
+                    self.connectsInFlight.remove(inFlightEndpoint)
+                    self.reconcileWirelessConnections()
                     return
                 }
                 self.attemptConnection(
