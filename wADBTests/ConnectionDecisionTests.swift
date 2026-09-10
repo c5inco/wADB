@@ -257,10 +257,20 @@ final class SupervisorModelTests: XCTestCase {
     }
 
     func testSuccessfulSecondaryConnectionUpdatesRememberedEndpoint() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+
         XCTAssertEqual(
             ADBRememberedEndpointResolver.resolve(
                 device: remembered,
-                connectedEndpoint: "[fd00::10]:43545"
+                connectedEndpoint: "[fd00::10]:43545",
+                services: [service]
             ),
             LastVerifiedDevice(
                 endpoint: "[fd00::10]:43545",
@@ -269,6 +279,28 @@ final class SupervisorModelTests: XCTestCase {
                 displayName: remembered.displayName,
                 fingerprint: remembered.fingerprint
             )
+        )
+    }
+
+    func testSuccessfulHostCorrelatedConnectionDoesNotRewriteRememberedEndpoint() {
+        // The reconnect target was correlated by host only: another paired
+        // phone now advertises this device's old address under its own name.
+        let otherService = BonjourService(
+            name: "adb-other",
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::20"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                device: remembered,
+                connectedEndpoint: "[fd00::20]:41000",
+                services: [otherService]
+            ),
+            remembered
         )
     }
 

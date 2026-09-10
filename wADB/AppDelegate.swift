@@ -1200,7 +1200,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.connectionRetries.removeValue(forKey: device.serviceName)
                         let connectedDevice = ADBRememberedEndpointResolver.resolve(
                             device: device,
-                            connectedEndpoint: endpoint
+                            connectedEndpoint: endpoint,
+                            services: self.services
                         )
                         if connectedDevice != device {
                             PairedDeviceStore.upsert(connectedDevice)

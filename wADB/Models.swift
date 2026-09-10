@@ -621,7 +621,7 @@ enum ADBRememberedEndpointResolver {
             }
             guard !matching.contains(where: { $0.serial == device.endpoint }),
                   let transport = matching.first else { return device }
-            return resolve(device: device, connectedEndpoint: transport.serial)
+            return resolve(device: device, connectedEndpoint: transport.serial, services: services)
         }
     }
 
@@ -638,11 +638,17 @@ enum ADBRememberedEndpointResolver {
             }
     }
 
+    /// The device record to keep after `connectedEndpoint` authorized. The
+    /// endpoint is adopted only when it is exactly this device's: the reconnect
+    /// target may have been correlated by host alone, and after DHCP moves a
+    /// host between phones that address belongs to someone else.
     static func resolve(
         device: LastVerifiedDevice,
-        connectedEndpoint: String
+        connectedEndpoint: String,
+        services: [BonjourService]
     ) -> LastVerifiedDevice {
         guard connectedEndpoint != device.endpoint,
+              isExactEndpoint(connectedEndpoint, of: device, services: services),
               let parsed = ADBNetworkEndpoint.parse(connectedEndpoint) else { return device }
         return LastVerifiedDevice(
             endpoint: connectedEndpoint,
