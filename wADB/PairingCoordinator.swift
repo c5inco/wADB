@@ -40,6 +40,8 @@ final class PairingCoordinator {
     private var nativeGraceWorkItem: DispatchWorkItem?
     private var finishWorkItem: DispatchWorkItem?
     private var explicitConnectStarted = false
+    private var remainingPairingEndpoints: ArraySlice<String> = []
+    private var remainingConnectEndpoints: ArraySlice<String> = []
 
     init(adb: ADBManager, completion: @escaping Completion) {
         self.adb = adb
@@ -113,8 +115,14 @@ final class PairingCoordinator {
         completion(nil)
     }
 
+    /// A dual-stack phone advertises the pairing service on several addresses
+    /// and the first-sorted one can be unreachable from this Mac. Each address
+    /// is tried in turn. The QR secret therefore stays in memory until the
+    /// last attempt reports instead of being erased before the first one; it
+    /// is a random single-use value this app minted moments ago, ADBManager
+    /// zeroes every copy it is handed, and `finish`/`cancel` erase the source.
     private func beginPairing(with service: BonjourService) {
-        guard phase == .scanning, let credentials else { return }
+        guard phase == .scanning, credentials != nil else { return }
         logger.info("Detected the requested QR pairing service")
         phase = .pairing
         pairingService = service
@@ -122,27 +130,39 @@ final class PairingCoordinator {
         expiryWorkItem = nil
         windowController.setStatus("QR code detected. Pairing securely…")
         windowController.clearQRCode()
-        let input = credentials.passwordInput()
-        eraseCredentials()
-        adb.pair(to: service.endpoint, passwordInput: input) { [weak self] result in
-            self?.handlePairResult(result)
+        remainingPairingEndpoints = service.endpoints[...]
+        attemptPairing()
+    }
+
+    private func attemptPairing() {
+        guard phase == .pairing, let credentials,
+              let endpoint = remainingPairingEndpoints.popFirst() else { return }
+        logger.info("Pairing at \(endpoint, privacy: .public)")
+        adb.pair(to: endpoint, passwordInput: credentials.passwordInput()) { [weak self] result in
+            self?.handlePairResult(result, endpoint: endpoint)
         }
     }
 
-    private func handlePairResult(_ result: Result<ADBProcessResult, Error>) {
+    private func handlePairResult(_ result: Result<ADBProcessResult, Error>, endpoint: String) {
         guard phase == .pairing else { return }
         switch result {
         case let .failure(error):
             logger.error("Could not launch adb pair: \(error.localizedDescription, privacy: .public)")
             finish(.failure(error), closeDelay: 2)
         case let .success(processResult):
-            let output = processResult.combinedOutput.lowercased()
-            guard processResult.status == 0, output.contains("successfully paired") else {
-                logger.error("adb pair failed with status \(processResult.status, privacy: .public)")
+            guard ADBOutputParser.pairSucceeded(processResult) else {
+                logger.error(
+                    "adb pair failed at \(endpoint, privacy: .public) with status \(processResult.status, privacy: .public)"
+                )
+                if !remainingPairingEndpoints.isEmpty {
+                    attemptPairing()
+                    return
+                }
                 let detail = processResult.combinedOutput.isEmpty ? "adb did not accept the QR credentials." : processResult.combinedOutput
                 finish(.failure(PairingCoordinatorError.pairingFailed(detail)), closeDelay: 3)
                 return
             }
+            eraseCredentials()
             logger.info("adb pair succeeded; waiting for an authorized transport")
             phase = .waitingForConnection
             windowController.setStatus("Paired. Waiting for an authorized connection…")
@@ -173,9 +193,20 @@ final class PairingCoordinator {
         if completeIfAuthorized() { return }
         logger.info("Native auto-connect did not complete; trying the correlated connect service")
         explicitConnectStarted = true
-        adb.connect(to: connectService.endpoint) { [weak self] _ in
+        remainingConnectEndpoints = connectService.endpoints[...]
+        attemptExplicitConnect()
+    }
+
+    /// Mirrors the pairing step: every advertised address is dialed in turn
+    /// until the authorized transport appears or the connection timeout fires.
+    private func attemptExplicitConnect() {
+        guard phase == .waitingForConnection,
+              let endpoint = remainingConnectEndpoints.popFirst() else { return }
+        logger.info("Connecting at \(endpoint, privacy: .public)")
+        adb.connect(to: endpoint) { [weak self] _ in
             guard let self, self.phase == .waitingForConnection else { return }
-            self.completeIfAuthorized()
+            if self.completeIfAuthorized() { return }
+            self.attemptExplicitConnect()
         }
     }
 

@@ -11,6 +11,14 @@ enum ADBOutputParser {
         return text.contains("connected to")
     }
 
+    /// `adb pair` reports success only with exit status 0 and a
+    /// "Successfully paired to <endpoint>" line; any other combination is a
+    /// failure regardless of what else it printed.
+    static func pairSucceeded(_ result: ADBProcessResult) -> Bool {
+        result.status == 0
+            && result.combinedOutput.lowercased().contains("successfully paired")
+    }
+
     /// `adb connect` prints "failed to authenticate to <endpoint>" when the
     /// device has the pairing key but the user has not yet approved this host.
     static func connectRequiresAuthorization(_ output: String) -> Bool {

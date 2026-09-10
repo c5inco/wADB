@@ -447,6 +447,24 @@ final class SupervisorModelTests: XCTestCase {
         )
     }
 
+    func testPairSucceededRequiresZeroStatusAndSuccessLine() {
+        XCTAssertTrue(ADBOutputParser.pairSucceeded(ADBProcessResult(
+            status: 0,
+            standardOutput: "Successfully paired to 192.0.2.10:37001 [guid=adb-phone]",
+            standardError: ""
+        )))
+        XCTAssertFalse(ADBOutputParser.pairSucceeded(ADBProcessResult(
+            status: 0,
+            standardOutput: "",
+            standardError: "Failed: Unable to start pairing client."
+        )))
+        XCTAssertFalse(ADBOutputParser.pairSucceeded(ADBProcessResult(
+            status: 1,
+            standardOutput: "Successfully paired to 192.0.2.10:37001",
+            standardError: ""
+        )))
+    }
+
     func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
         let failures = [
             ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),
