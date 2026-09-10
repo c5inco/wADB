@@ -396,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isExplicitRestartInFlight = false
     private var snapshotFailureCount = 0
     private var connectsInFlight = Set<String>()
+    private var automaticReconnectGeneration = UUID()
     private var connectionRetries: [String: ADBConnectionRetryState] = [:]
     private var lastConnectionTargets: [String: ADBConnectionTarget] = [:]
     private var restartRecommendedDeviceIDs = Set<String>()
@@ -575,6 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isExplicitRestartInFlight = false
         snapshotFailureCount = 0
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -689,7 +691,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 .compactMap { $0 }
         }
         let serviceValues = services.flatMap { service in
-            [service.name, service.host, service.targetHost, service.endpoint, service.identity]
+            ([service.name, service.targetHost, service.identity]
+                + service.hosts.map(Optional.some)
+                + service.endpoints.map(Optional.some))
                 .compactMap { $0 }
         }
         return remembered + transportValues + serviceValues
@@ -735,6 +739,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watchdogTimer = nil
         snapshotFailureCount = 0
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -785,6 +790,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snapshotFailureCount = 0
         transports = []
         connectsInFlight.removeAll()
+        automaticReconnectGeneration = UUID()
         connectionRetries.removeAll()
         lastConnectionTargets.removeAll()
         restartRecommendedDeviceIDs.removeAll()
@@ -962,14 +968,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var disconnectedRememberedDevices: [LastVerifiedDevice] {
         rememberedDevices.filter { remembered in
-            !transports.contains {
-                $0.state == .authorized
-                    && WirelessDeviceResolver.matches(
-                        $0,
-                        rememberedDevice: remembered,
-                        services: services
-                    )
-            }
+            ADBAutomaticReconnectPolicy.shouldReconnect(
+                remembered,
+                transports: transports,
+                services: services
+            )
         }
     }
 
@@ -1032,6 +1035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         self.transports = transports
+        rememberAuthorizedEndpoints(from: transports)
         let connectedRememberedIDs = Set(rememberedDevices.compactMap { remembered in
             transports.contains {
                 $0.state == .authorized
@@ -1056,6 +1060,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateMenuState()
     }
 
+    /// Keeps remembered endpoints in step with the transport ADB actually
+    /// authorized, whichever path connected it. Without this a device that
+    /// authorized on a secondary address, or through an `adb connect` issued
+    /// outside wADB, stops matching its remembered entry once Bonjour data is
+    /// gone and gets reconnected on top of a live transport.
+    private func rememberAuthorizedEndpoints(from transports: [ADBTransport]) {
+        let reconciled = ADBRememberedEndpointResolver.reconcile(
+            rememberedDevices,
+            transports: transports,
+            services: services
+        )
+        guard reconciled != rememberedDevices else { return }
+        for (previous, current) in zip(rememberedDevices, reconciled) where previous != current {
+            logger.info(
+                "Remembering \(current.displayName, privacy: .public) at \(current.endpoint, privacy: .public)"
+            )
+            PairedDeviceStore.upsert(current)
+        }
+        rememberedDevices = PairedDeviceStore.load()
+    }
+
     private func removeDuplicateExplicitConnections(from transports: [ADBTransport]) {
         guard serverState.isRunning, let adb else { return }
         let authorized = transports.filter { $0.state == .authorized }
@@ -1063,34 +1088,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let hasNativeTransport = authorized.contains {
                 $0.connectServiceName == service.name
             }
-            let hasExplicitTransport = authorized.contains {
-                $0.serial == service.endpoint
-            }
-            guard hasNativeTransport,
-                  hasExplicitTransport,
-                  duplicateEndpointsBeingRemoved.insert(service.endpoint).inserted else {
-                continue
-            }
-            adb.disconnect(from: service.endpoint) { [weak self, weak adb] result in
-                guard let self else { return }
-                if case let .success(processResult) = result, processResult.status != 0 {
-                    self.logger.error(
-                        "Could not remove duplicate explicit transport: \(processResult.combinedOutput, privacy: .public)"
-                    )
-                }
-                adb?.snapshot { [weak self] snapshot in
+            guard hasNativeTransport else { continue }
+            for endpoint in service.endpoints where authorized.contains(where: { $0.serial == endpoint }) {
+                guard duplicateEndpointsBeingRemoved.insert(endpoint).inserted else { continue }
+                adb.disconnect(from: endpoint) { [weak self, weak adb] result in
                     guard let self else { return }
-                    if case let .success(transports) = snapshot { self.handleTransports(transports) }
-                    self.duplicateEndpointsBeingRemoved.remove(service.endpoint)
+                    if case let .success(processResult) = result, processResult.status != 0 {
+                        self.logger.error(
+                            "Could not remove duplicate explicit transport: \(processResult.combinedOutput, privacy: .public)"
+                        )
+                    }
+                    adb?.snapshot { [weak self] snapshot in
+                        guard let self else { return }
+                        if case let .success(transports) = snapshot { self.handleTransports(transports) }
+                        self.duplicateEndpointsBeingRemoved.remove(endpoint)
+                    }
                 }
             }
         }
     }
 
-    /// Reconnect anything remembered that is not currently authorized. A
-    /// refused endpoint backs off independently and can never affect server
-    /// health. Genuine wireless-debugging port changes are attempted
-    /// immediately; address-family churn keeps the existing backoff.
+    /// Reconnect anything remembered that is neither authorized nor awaiting
+    /// authorization. A refused endpoint backs off independently and can never
+    /// affect server health. Genuine wireless-debugging port changes are
+    /// attempted immediately; address-family churn keeps the existing backoff.
     private func reconcileWirelessConnections() {
         guard serverState.isRunning, pairingCoordinator == nil, let adb else { return }
         let disconnected = disconnectedRememberedDevices
@@ -1120,58 +1141,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard connectsInFlight.insert(endpoint).inserted else { continue }
             connectionRetries[device.serviceName] = retry
             let generation = operationGeneration
-            logger.info(
-                "Connecting \(device.displayName, privacy: .public) at \(endpoint, privacy: .public); attempt=\(retry.consecutiveFailures + 1, privacy: .public)"
+            let reconnectGeneration = automaticReconnectGeneration
+            attemptConnection(
+                device: device,
+                target: target,
+                remainingEndpoints: target.endpoints[...],
+                failures: [],
+                inFlightEndpoint: endpoint,
+                adb: adb,
+                generation: generation,
+                reconnectGeneration: reconnectGeneration,
+                attemptNumber: retry.consecutiveFailures + 1
             )
-            adb.connect(to: endpoint) { [weak self] result in
-                DispatchQueue.main.async {
-                    guard let self, self.operationGeneration == generation else { return }
-                    self.connectsInFlight.remove(endpoint)
-                    switch result {
-                    case let .success(processResult):
-                        let output = processResult.combinedOutput
-                        // Empty output means the attempt was cancelled by a
-                        // state change, not that it failed.
-                        guard !output.isEmpty else { return }
-                        if ADBOutputParser.connectSucceeded(output) {
-                            self.connectionRetries.removeValue(forKey: device.serviceName)
-                        } else {
-                            self.recordConnectionFailure(
-                                output,
-                                device: device,
-                                target: target
-                            )
-                        }
-                    case let .failure(error):
-                        self.recordConnectionFailure(
-                            error.localizedDescription,
-                            device: device,
-                            target: target
-                        )
-                    }
-                }
-            }
             return
         }
     }
 
+    private func attemptConnection(
+        device: LastVerifiedDevice,
+        target: ADBConnectionTarget,
+        remainingEndpoints: ArraySlice<String>,
+        failures: [ADBConnectionFailure],
+        inFlightEndpoint: String,
+        adb: ADBManager,
+        generation: UUID,
+        reconnectGeneration: UUID,
+        attemptNumber: Int
+    ) {
+        guard let endpoint = remainingEndpoints.first else {
+            connectsInFlight.remove(inFlightEndpoint)
+            recordConnectionFailure(
+                failures,
+                device: device,
+                target: target
+            )
+            return
+        }
+        logger.info(
+            "Connecting \(device.displayName, privacy: .public) at \(endpoint, privacy: .public); attempt=\(attemptNumber, privacy: .public)"
+        )
+        adb.connect(to: endpoint) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.operationGeneration == generation,
+                      self.automaticReconnectGeneration == reconnectGeneration else { return }
+                let detail: String
+                switch result {
+                case let .success(processResult):
+                    detail = processResult.combinedOutput
+                    // Empty output means the attempt was cancelled by a state
+                    // change, not that it failed.
+                    guard !detail.isEmpty else {
+                        self.connectsInFlight.remove(inFlightEndpoint)
+                        return
+                    }
+                    if ADBOutputParser.connectSucceeded(detail) {
+                        self.connectsInFlight.remove(inFlightEndpoint)
+                        self.connectionRetries.removeValue(forKey: device.serviceName)
+                        let connectedDevice = ADBRememberedEndpointResolver.resolve(
+                            device: device,
+                            connectedEndpoint: endpoint,
+                            services: self.services
+                        )
+                        if connectedDevice != device {
+                            PairedDeviceStore.upsert(connectedDevice)
+                            self.rememberedDevices = PairedDeviceStore.load()
+                        }
+                        return
+                    }
+                case let .failure(error):
+                    detail = error.localizedDescription
+                }
+                guard ADBAutomaticReconnectPolicy.shouldContinueFailover(
+                    device,
+                    attemptedEndpoint: endpoint,
+                    failureDetail: detail,
+                    transports: self.transports,
+                    services: self.services
+                ) else {
+                    self.connectsInFlight.remove(inFlightEndpoint)
+                    self.connectionRetries.removeValue(forKey: device.serviceName)
+                    return
+                }
+                guard ADBAutomaticReconnectPolicy.targetIsCurrent(
+                    target,
+                    device: device,
+                    services: self.services
+                ) else {
+                    // Bonjour republished the device mid-sequence. The remaining
+                    // endpoints are stale, so stop without charging a retry and
+                    // let reconciliation start again from the live target.
+                    self.logger.info(
+                        "Abandoning stale reconnect sequence for \(device.displayName, privacy: .public)"
+                    )
+                    self.connectsInFlight.remove(inFlightEndpoint)
+                    self.reconcileWirelessConnections()
+                    return
+                }
+                self.attemptConnection(
+                    device: device,
+                    target: target,
+                    remainingEndpoints: remainingEndpoints.dropFirst(),
+                    failures: failures + [ADBConnectionFailure(
+                        endpoint: endpoint,
+                        detail: detail
+                    )],
+                    inFlightEndpoint: inFlightEndpoint,
+                    adb: adb,
+                    generation: generation,
+                    reconnectGeneration: reconnectGeneration,
+                    attemptNumber: attemptNumber
+                )
+            }
+        }
+    }
+
     private func recordConnectionFailure(
-        _ detail: String,
+        _ failures: [ADBConnectionFailure],
         device: LastVerifiedDevice,
         target: ADBConnectionTarget
     ) {
+        let detail = ADBConnectionFailurePolicy.combinedDetail(failures)
         var retry = connectionRetries[device.serviceName] ?? ADBConnectionRetryState()
         let delay = retry.recordFailure(targetIdentity: target.retryIdentity, now: Date())
         connectionRetries[device.serviceName] = retry
         logger.error(
             "Connect failed for \(device.displayName, privacy: .public) at \(target.endpoint, privacy: .public); retrying in \(Int(delay), privacy: .public)s: \(detail, privacy: .public)"
         )
-        evaluateRestartRecommendation(
-            failureDetail: detail,
-            device: device,
-            target: target,
-            retry: retry
-        )
+        if let recoveryDetail = ADBConnectionFailurePolicy.recoveryDetail(
+            for: target.endpoint,
+            failures: failures
+        ) {
+            evaluateRestartRecommendation(
+                failureDetail: recoveryDetail,
+                device: device,
+                target: target,
+                retry: retry
+            )
+        }
     }
 
     private func evaluateRestartRecommendation(
@@ -1246,6 +1353,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func pairNewDevice() {
         guard serverState.isRunning, pairingCoordinator == nil, let adb else { return }
+        // Invalidate the whole automatic failover sequence before pairing can
+        // use ADBManager's shared connect slot. A stale endpoint callback must
+        // not start another connect and terminate the pairing connection.
+        automaticReconnectGeneration = UUID()
+        connectsInFlight.removeAll()
+        adb.cancelConnectionAttempt()
         let coordinator = PairingCoordinator(adb: adb) { [weak self] result in
             guard let self else { return }
             self.pairingCoordinator = nil

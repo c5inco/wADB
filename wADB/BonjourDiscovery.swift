@@ -33,6 +33,7 @@ final class BonjourDiscovery {
         var targetHost: String?
         var port: UInt16?
         var addresses = Set<String>()
+        var removedAddressInBatch = false
 
         init(owner: BonjourDiscovery, key: ServiceKey) {
             self.owner = owner
@@ -45,6 +46,7 @@ final class BonjourDiscovery {
             resolveRef = nil
             addressRef = nil
             addresses.removeAll()
+            removedAddressInBatch = false
         }
 
         deinit { stop() }
@@ -238,6 +240,17 @@ final class BonjourDiscovery {
     ) {
         guard errorCode == kDNSServiceErr_NoError, let address,
               var host = Self.numericHost(address) else {
+            if Self.shouldPublishAddressResults(
+                flags: flags,
+                errorCode: errorCode,
+                hasResolvedAddresses: !resolution.addresses.isEmpty,
+                removedAddressInBatch: resolution.removedAddressInBatch
+            ) {
+                publishLocked()
+            }
+            if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 {
+                resolution.removedAddressInBatch = false
+            }
             if errorCode != kDNSServiceErr_NoError {
                 DispatchQueue.main.async { self.onError?(BonjourDiscoveryError.resolveFailed(errorCode)) }
             }
@@ -251,25 +264,47 @@ final class BonjourDiscovery {
             resolution.addresses.insert(host)
         } else {
             resolution.addresses.remove(host)
+            resolution.removedAddressInBatch = true
         }
-        publishLocked()
+        // DNSServiceGetAddrInfo may deliver the address families as one batch.
+        // Wait for its final callback so reconnection sees every candidate
+        // before it starts dialing the preferred address.
+        if Self.shouldPublishAddressResults(
+            flags: flags,
+            errorCode: errorCode,
+            hasResolvedAddresses: !resolution.addresses.isEmpty,
+            removedAddressInBatch: resolution.removedAddressInBatch
+        ) {
+            publishLocked()
+        }
+        if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 {
+            resolution.removedAddressInBatch = false
+        }
+    }
+
+    static func shouldPublishAddressResults(
+        flags: DNSServiceFlags,
+        errorCode: DNSServiceErrorType,
+        hasResolvedAddresses: Bool,
+        removedAddressInBatch: Bool
+    ) -> Bool {
+        guard flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 else { return false }
+        return errorCode == kDNSServiceErr_NoError
+            || hasResolvedAddresses
+            || removedAddressInBatch
     }
 
     private func publishLocked() {
         let services = resolutions.values.compactMap { resolution -> BonjourService? in
             guard let port = resolution.port else { return nil }
-            let host = resolution.addresses.sorted { left, right in
-                let leftIsIPv4 = !left.contains(":")
-                let rightIsIPv4 = !right.contains(":")
-                return leftIsIPv4 == rightIsIPv4 ? left < right : leftIsIPv4
-            }.first
-            guard let host else { return nil }
+            let hosts = Array(resolution.addresses)
+            guard !hosts.isEmpty else { return nil }
             let key = resolution.key
             return BonjourService(
                 name: key.name,
                 type: key.type,
                 domain: key.domain,
-                host: host,
+                hosts: hosts,
                 targetHost: resolution.targetHost,
                 port: port,
                 interfaceIndex: key.interfaceIndex

@@ -1,7 +1,35 @@
 import XCTest
+import dnssd
 @testable import wADB
 
 final class BonjourCorrelationTests: XCTestCase {
+    func testAddressBatchPublishesUsableResultsWhenOtherFamilyEndsWithError() {
+        XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
+            flags: DNSServiceFlags(kDNSServiceFlagsMoreComing),
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoError),
+            hasResolvedAddresses: true,
+            removedAddressInBatch: false
+        ))
+        XCTAssertTrue(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: true,
+            removedAddressInBatch: false
+        ))
+        XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: false,
+            removedAddressInBatch: false
+        ))
+        XCTAssertTrue(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: false,
+            removedAddressInBatch: true
+        ))
+    }
+
     func testServiceTypeNormalizesDNSServiceTrailingDot() {
         let service = BonjourService(
             name: "adb-connect", type: "_adb-tls-connect._tcp.", domain: "local.",
@@ -57,6 +85,26 @@ final class BonjourCorrelationTests: XCTestCase {
             host: "fe80::1234%en0", port: 37001, interfaceIndex: 4
         )
         XCTAssertEqual(service.endpoint, "[fe80::1234%en0]:37001")
+    }
+
+    func testPairingPersistsTheAuthorizedSecondaryBonjourEndpoint() {
+        let service = BonjourService(
+            name: "adb-connect", type: BonjourService.connectType, domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"], port: 37001, interfaceIndex: 4
+        )
+        let transport = ADBTransport(
+            serial: "[fd00::10]:37001",
+            state: .authorized,
+            attributes: [:]
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                service: service,
+                authorizedTransport: transport
+            ),
+            ADBRememberedEndpoint(endpoint: "[fd00::10]:37001", host: "fd00::10")
+        )
     }
 
     func testPairingResolvesNewAuthorizedTransportThroughItsConnectService() {

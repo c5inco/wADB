@@ -11,6 +11,12 @@ enum ADBOutputParser {
         return text.contains("connected to")
     }
 
+    /// `adb connect` prints "failed to authenticate to <endpoint>" when the
+    /// device has the pairing key but the user has not yet approved this host.
+    static func connectRequiresAuthorization(_ output: String) -> Bool {
+        output.lowercased().contains("failed to authenticate")
+    }
+
     static func parseDeviceList(_ output: String) -> [ADBTransport] {
         output.split(whereSeparator: \.isNewline).compactMap { line in
             parseTransportLine(String(line))

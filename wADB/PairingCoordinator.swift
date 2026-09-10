@@ -186,9 +186,13 @@ final class PairingCoordinator {
         self.connectService = connectService
         logger.info("Pairing completed with an authorized ADB transport")
         adb.cancelConnectionAttempt()
+        let rememberedEndpoint = ADBRememberedEndpointResolver.resolve(
+            service: connectService,
+            authorizedTransport: transport
+        )
         let verified = LastVerifiedDevice(
-            endpoint: connectService.endpoint,
-            host: connectService.host,
+            endpoint: rememberedEndpoint.endpoint,
+            host: rememberedEndpoint.host,
             serviceName: connectService.name,
             displayName: transport.modelDisplayName,
             fingerprint: transport.fingerprint
@@ -248,7 +252,7 @@ final class PairingCoordinator {
             for: pairingService,
             among: services
         ), let transport = authorized.first(where: {
-            $0.connectServiceName == service.name || $0.serial == service.endpoint
+            $0.connectServiceName == service.name || service.endpoints.contains($0.serial)
         }) else { return nil }
         return (service, transport)
     }
@@ -261,14 +265,16 @@ final class PairingCoordinator {
         guard !authorized.isEmpty else { return nil }
         if let preferredService,
            let transport = authorized.first(where: {
-               $0.connectServiceName == preferredService.name || $0.serial == preferredService.endpoint
+               $0.connectServiceName == preferredService.name
+                   || preferredService.endpoints.contains($0.serial)
            }) {
             return (preferredService, transport)
         }
         for transport in authorized {
             if let service = services.first(where: {
                 $0.type == BonjourService.connectType
-                    && ($0.name == transport.connectServiceName || $0.endpoint == transport.serial)
+                    && ($0.name == transport.connectServiceName
+                        || $0.endpoints.contains(transport.serial))
             }) {
                 return (service, transport)
             }

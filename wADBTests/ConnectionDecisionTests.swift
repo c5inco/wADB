@@ -102,6 +102,370 @@ final class SupervisorModelTests: XCTestCase {
         XCTAssertEqual(retry.consecutiveFailures, 1)
     }
 
+    func testConnectionTargetRetainsEveryBonjourAddressInOrder() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["fe80::10%en0", "fd00::10", "192.0.2.10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            ADBConnectionTarget(device: remembered, service: service).endpoints,
+            ["192.0.2.10:43545", "[fd00::10]:43545", "[fe80::10%en0]:43545"]
+        )
+    }
+
+    func testAuthorizedAndUnauthorizedTransportsDoNotReconnectButOfflineDoes() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            host: remembered.host,
+            port: 43545,
+            interfaceIndex: 4
+        )
+
+        for state in [ADBTransportState.authorized, .unauthorized] {
+            XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldReconnect(
+                remembered,
+                transports: [ADBTransport(
+                    serial: service.endpoint,
+                    state: state,
+                    attributes: [:]
+                )],
+                services: [service]
+            ))
+        }
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.shouldReconnect(
+            remembered,
+            transports: [ADBTransport(
+                serial: service.endpoint,
+                state: .offline,
+                attributes: [:]
+            )],
+            services: [service]
+        ))
+    }
+
+    func testSecondaryBonjourEndpointSatisfiesAutomaticReconnect() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+        let secondaryTransport = ADBTransport(
+            serial: "[fd00::10]:43545",
+            state: .authorized,
+            attributes: [:]
+        )
+
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldReconnect(
+            remembered,
+            transports: [secondaryTransport],
+            services: [service]
+        ))
+        XCTAssertTrue(WirelessDeviceResolver.matches(
+            secondaryTransport,
+            rememberedDevice: remembered,
+            services: [service]
+        ))
+    }
+
+    func testFailoverStopsWhenAttemptedEndpointBecomesUnauthorized() {
+        let transport = ADBTransport(
+            serial: "[fd00::10]:43545",
+            state: .unauthorized,
+            attributes: [:]
+        )
+
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: transport.serial,
+            failureDetail: "failed to connect to [fd00::10]:43545",
+            transports: [transport],
+            services: []
+        ))
+    }
+
+    func testFailoverStopsWhenConnectReportsAuthenticationFailure() {
+        // adb reports the authentication failure before the tracker publishes
+        // the unauthorized transport, so the snapshot is still empty here.
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: "192.0.2.10:36203",
+            failureDetail: "failed to authenticate to 192.0.2.10:36203",
+            transports: [],
+            services: []
+        ))
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: "192.0.2.10:36203",
+            failureDetail: "failed to connect to 192.0.2.10:36203",
+            transports: [],
+            services: []
+        ))
+    }
+
+    func testReconcileIgnoresAnotherPhoneThatInheritedTheRememberedAddress() {
+        // DHCP handed the offline phone's old address to a different paired
+        // phone. Its service advertises the remembered host, and its transport
+        // could even share a fingerprint, but neither is this device.
+        let otherPhone = LastVerifiedDevice(
+            endpoint: "192.0.2.10:41000",
+            host: "192.0.2.10",
+            serviceName: "adb-other",
+            displayName: "Other Phone",
+            fingerprint: remembered.fingerprint
+        )
+        let otherService = BonjourService(
+            name: otherPhone.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::20"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+        let transport = ADBTransport(
+            serial: "[fd00::20]:41000",
+            state: .authorized,
+            attributes: ["product": "example", "model": "Example_Phone", "device": "example"]
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered, otherPhone],
+                transports: [transport],
+                services: [otherService]
+            ),
+            [
+                remembered,
+                LastVerifiedDevice(
+                    endpoint: "[fd00::20]:41000",
+                    host: "fd00::20",
+                    serviceName: otherPhone.serviceName,
+                    displayName: otherPhone.displayName,
+                    fingerprint: otherPhone.fingerprint
+                ),
+            ]
+        )
+    }
+
+    func testSuccessfulSecondaryConnectionUpdatesRememberedEndpoint() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 43545,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                device: remembered,
+                connectedEndpoint: "[fd00::10]:43545",
+                services: [service]
+            ),
+            LastVerifiedDevice(
+                endpoint: "[fd00::10]:43545",
+                host: "fd00::10",
+                serviceName: remembered.serviceName,
+                displayName: remembered.displayName,
+                fingerprint: remembered.fingerprint
+            )
+        )
+    }
+
+    func testSuccessfulHostCorrelatedConnectionDoesNotRewriteRememberedEndpoint() {
+        // The reconnect target was correlated by host only: another paired
+        // phone now advertises this device's old address under its own name.
+        let otherService = BonjourService(
+            name: "adb-other",
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::20"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                device: remembered,
+                connectedEndpoint: "[fd00::20]:41000",
+                services: [otherService]
+            ),
+            remembered
+        )
+    }
+
+    func testAuthorizedSecondaryTransportUpdatesRememberedEndpoint() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+        let transport = ADBTransport(serial: "[fd00::10]:36203", state: .authorized, attributes: [:])
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: [transport],
+                services: [service]
+            ),
+            [LastVerifiedDevice(
+                endpoint: "[fd00::10]:36203",
+                host: "fd00::10",
+                serviceName: remembered.serviceName,
+                displayName: remembered.displayName,
+                fingerprint: remembered.fingerprint
+            )]
+        )
+    }
+
+    func testRememberedEndpointKeepsStoredAddressWhenItIsStillAuthorized() {
+        let service = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+        let transports = [
+            ADBTransport(serial: "[fd00::10]:36203", state: .authorized, attributes: [:]),
+            ADBTransport(serial: "192.0.2.10:36203", state: .authorized, attributes: [:]),
+        ]
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: transports,
+                services: [service]
+            ),
+            [remembered]
+        )
+    }
+
+    func testNativeAndUnauthorizedTransportsDoNotRewriteRememberedEndpoint() {
+        let transports = [
+            ADBTransport(
+                serial: "\(remembered.serviceName).\(BonjourService.connectType)",
+                state: .authorized,
+                attributes: [:]
+            ),
+            ADBTransport(serial: "[fd00::10]:36203", state: .unauthorized, attributes: [:]),
+        ]
+
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.reconcile(
+                [remembered],
+                transports: transports,
+                services: []
+            ),
+            [remembered]
+        )
+    }
+
+    func testFailoverStopsWhenBonjourRepublishesTheTargetMidSequence() {
+        func service(port: UInt16, hosts: [String]) -> BonjourService {
+            BonjourService(
+                name: remembered.serviceName,
+                type: BonjourService.connectType,
+                domain: "local.",
+                hosts: hosts,
+                port: port,
+                interfaceIndex: 4
+            )
+        }
+        let original = service(port: 36203, hosts: ["192.0.2.10", "fd00::10"])
+        let target = ADBConnectionTarget(device: remembered, service: original)
+
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target, device: remembered, services: [original]
+        ))
+        // A transient empty publish keeps the sequence alive.
+        XCTAssertTrue(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target, device: remembered, services: []
+        ))
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target,
+            device: remembered,
+            services: [service(port: 40001, hosts: ["192.0.2.10", "fd00::10"])]
+        ))
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.targetIsCurrent(
+            target,
+            device: remembered,
+            services: [service(port: 36203, hosts: ["192.0.2.10"])]
+        ))
+    }
+
+    func testRememberedServiceNameBeatsAnotherDeviceOnTheRememberedHost() {
+        // "adb-aaa" sorts before the remembered service and now advertises the
+        // remembered host after DHCP reassignment. Identity must still win.
+        let impostor = BonjourService(
+            name: "adb-aaa",
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.10"],
+            port: 41000,
+            interfaceIndex: 4
+        )
+        let exact = BonjourService(
+            name: remembered.serviceName,
+            type: BonjourService.connectType,
+            domain: "local.",
+            hosts: ["192.0.2.77", "fd00::10"],
+            port: 36203,
+            interfaceIndex: 4
+        )
+
+        XCTAssertEqual(
+            BonjourCorrelator.connectService(for: remembered, among: [impostor, exact]),
+            exact
+        )
+        XCTAssertEqual(
+            ADBConnectionTargetResolver.resolve(
+                device: remembered,
+                services: [impostor, exact],
+                previous: nil
+            ).endpoints,
+            ["192.0.2.77:36203", "[fd00::10]:36203"]
+        )
+        // Host fallback still applies when no service carries the name.
+        XCTAssertEqual(
+            BonjourCorrelator.connectService(for: remembered, among: [impostor]),
+            impostor
+        )
+    }
+
+    func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
+        let failures = [
+            ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),
+            ADBConnectionFailure(endpoint: "[fd00::10]:43545", detail: "No route to host"),
+        ]
+
+        XCTAssertEqual(
+            ADBConnectionFailurePolicy.recoveryDetail(
+                for: "192.0.2.10:43545",
+                failures: failures
+            ),
+            "connection refused"
+        )
+        XCTAssertEqual(
+            ADBConnectionFailurePolicy.combinedDetail(failures),
+            "192.0.2.10:43545: connection refused; [fd00::10]:43545: No route to host"
+        )
+    }
+
     func testTemporaryBonjourDisappearanceKeepsLastLiveTarget() {
         let service = BonjourService(
             name: remembered.serviceName,

@@ -65,7 +65,7 @@ struct BonjourService: Hashable {
     let name: String
     let type: String
     let domain: String
-    let host: String
+    let hosts: [String]
     let targetHost: String?
     let port: UInt16
     let interfaceIndex: UInt32
@@ -79,35 +79,84 @@ struct BonjourService: Hashable {
         port: UInt16,
         interfaceIndex: UInt32
     ) {
+        self.init(
+            name: name,
+            type: type,
+            domain: domain,
+            hosts: [host],
+            targetHost: targetHost,
+            port: port,
+            interfaceIndex: interfaceIndex
+        )
+    }
+
+    init(
+        name: String,
+        type: String,
+        domain: String,
+        hosts: [String],
+        targetHost: String? = nil,
+        port: UInt16,
+        interfaceIndex: UInt32
+    ) {
+        precondition(!hosts.isEmpty, "A resolved Bonjour service must have at least one address")
         self.name = name
         self.type = type.hasSuffix(".") ? String(type.dropLast()) : type
         self.domain = domain
-        self.host = host
+        self.hosts = Self.orderedHosts(hosts)
         self.targetHost = targetHost
         self.port = port
         self.interfaceIndex = interfaceIndex
     }
 
+    var host: String { hosts[0] }
+
     var endpoint: String {
-        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+        Self.endpoint(host: host, port: port)
     }
+
+    var endpoints: [String] { hosts.map { Self.endpoint(host: $0, port: port) } }
 
     var identity: String {
         "\(name)|\(type)|\(domain)|\(interfaceIndex)"
     }
 
     var normalizedHost: String {
+        normalizedHosts[0]
+    }
+
+    var normalizedHosts: [String] { hosts.map(Self.normalizedHost) }
+
+    var normalizedTargetHost: String? {
+        guard var value = targetHost?.lowercased(), !value.isEmpty else { return nil }
+        while value.hasSuffix(".") { value.removeLast() }
+        return value
+    }
+
+    private static func endpoint(host: String, port: UInt16) -> String {
+        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+    }
+
+    private static func orderedHosts(_ hosts: [String]) -> [String] {
+        hosts.sorted { left, right in
+            let leftRank = addressRank(left)
+            let rightRank = addressRank(right)
+            return leftRank == rightRank ? left < right : leftRank < rightRank
+        }
+    }
+
+    private static func addressRank(_ host: String) -> Int {
+        guard host.contains(":") else { return 0 }
+        let unscoped = host.split(separator: "%", maxSplits: 1).first?.lowercased() ?? ""
+        return unscoped.hasPrefix("fe80:") ? 2 : 1
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
         var value = host.lowercased()
         if value.hasPrefix("[") && value.hasSuffix("]") {
             value.removeFirst()
             value.removeLast()
         }
-        while value.hasSuffix(".") { value.removeLast() }
-        return value
-    }
-
-    var normalizedTargetHost: String? {
-        guard var value = targetHost?.lowercased(), !value.isEmpty else { return nil }
         while value.hasSuffix(".") { value.removeLast() }
         return value
     }
@@ -132,15 +181,20 @@ enum BonjourCorrelator {
         return sameHost.count == 1 ? sameHost.first : nil
     }
 
+    /// The device's own service name is the identity; a host match is only a
+    /// fallback for older ADB Wi-Fi builds that advertise no stable name. The
+    /// exact name is checked across every service first, because after DHCP
+    /// another device can advertise the remembered host and sort earlier.
     static func connectService(
         for lastDevice: LastVerifiedDevice,
         among services: [BonjourService]
     ) -> BonjourService? {
-        services.first {
-            guard $0.type == BonjourService.connectType else { return false }
-            return $0.name == lastDevice.serviceName
-                || $0.normalizedHost == normalizedHost(lastDevice.host)
+        let connectServices = services.filter { $0.type == BonjourService.connectType }
+        if let exact = connectServices.first(where: { $0.name == lastDevice.serviceName }) {
+            return exact
         }
+        let host = normalizedHost(lastDevice.host)
+        return connectServices.first { $0.normalizedHosts.contains(host) }
     }
 
     private static func normalizedHost(_ host: String) -> String {
@@ -158,7 +212,7 @@ enum BonjourCorrelator {
            leftTarget == rightTarget {
             return true
         }
-        return left.normalizedHost == right.normalizedHost
+        return !Set(left.normalizedHosts).isDisjoint(with: right.normalizedHosts)
     }
 }
 
@@ -267,7 +321,7 @@ enum WirelessDeviceResolver {
         if transport.serial.hasPrefix("emulator-") { return false }
         if transport.connectServiceName != nil { return true }
         if services.contains(where: {
-            $0.type == BonjourService.connectType && $0.endpoint == transport.serial
+            $0.type == BonjourService.connectType && $0.endpoints.contains(transport.serial)
         }) {
             return true
         }
@@ -288,7 +342,7 @@ enum WirelessDeviceResolver {
         if let service = BonjourCorrelator.connectService(
             for: rememberedDevice,
             among: services
-        ), transport.serial == service.endpoint
+        ), service.endpoints.contains(transport.serial)
             || transport.connectServiceName == service.name {
             return true
         }
@@ -315,7 +369,7 @@ enum WirelessDeviceResolver {
         var groups: [String: [ADBTransport]] = [:]
         for transport in transports {
             let matchingService = services.first {
-                $0.name == transport.connectServiceName || $0.endpoint == transport.serial
+                $0.name == transport.connectServiceName || $0.endpoints.contains(transport.serial)
             }
             let remembered = rememberedDevices.first {
                 matches(transport, rememberedDevice: $0, services: services)
@@ -337,7 +391,7 @@ enum WirelessDeviceResolver {
     ) -> BonjourService? {
         for transport in transports {
             if let match = services.first(where: {
-                $0.name == transport.connectServiceName || $0.endpoint == transport.serial
+                $0.name == transport.connectServiceName || $0.endpoints.contains(transport.serial)
             }) {
                 return match
             }
@@ -403,6 +457,70 @@ enum ADBWatchdogPolicy {
     }
 }
 
+enum ADBAutomaticReconnectPolicy {
+    static func shouldReconnect(
+        _ device: LastVerifiedDevice,
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> Bool {
+        !transports.contains { transport in
+            guard WirelessDeviceResolver.matches(
+                transport,
+                rememberedDevice: device,
+                services: services
+            ) else { return false }
+            switch transport.state {
+            case .authorized, .unauthorized:
+                return true
+            case .offline, .other:
+                return false
+            }
+        }
+    }
+
+    /// Whether a failed dial should move on to the next advertised address.
+    /// Authorization is the one failure that must not fail over: `adb connect`
+    /// reports it before the tracker publishes the unauthorized transport, so
+    /// the failure text is checked as well as the transport snapshot.
+    static func shouldContinueFailover(
+        _ device: LastVerifiedDevice,
+        attemptedEndpoint: String,
+        failureDetail: String,
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> Bool {
+        guard !ADBOutputParser.connectRequiresAuthorization(failureDetail) else { return false }
+        return !transports.contains { transport in
+            guard transport.state == .authorized || transport.state == .unauthorized else {
+                return false
+            }
+            return transport.serial == attemptedEndpoint
+                || WirelessDeviceResolver.matches(
+                    transport,
+                    rememberedDevice: device,
+                    services: services
+                )
+        }
+    }
+
+    /// A failover sequence dials the endpoint list it started with. When
+    /// Bonjour republishes the device with a rotated port or a different
+    /// address set mid-sequence, the remaining endpoints are stale and the
+    /// sequence should stop so reconciliation can start over from the live
+    /// target. A transient empty publish keeps the current target.
+    static func targetIsCurrent(
+        _ target: ADBConnectionTarget,
+        device: LastVerifiedDevice,
+        services: [BonjourService]
+    ) -> Bool {
+        ADBConnectionTargetResolver.resolve(
+            device: device,
+            services: services,
+            previous: target
+        ) == target
+    }
+}
+
 struct ADBConnectionRetryState: Equatable {
     private(set) var targetIdentity: String?
     private(set) var consecutiveFailures = 0
@@ -435,13 +553,15 @@ struct ADBConnectionRetryState: Equatable {
 }
 
 struct ADBConnectionTarget: Equatable {
-    let endpoint: String
+    let endpoints: [String]
     /// Stable across IPv4/IPv6 address changes, but changes when Android
     /// rotates the wireless-debugging port.
     let retryIdentity: String
 
+    var endpoint: String { endpoints[0] }
+
     init(device: LastVerifiedDevice, service: BonjourService?) {
-        endpoint = service?.endpoint ?? device.endpoint
+        endpoints = service?.endpoints ?? [device.endpoint]
         let port = service.map { String($0.port) }
             ?? Self.port(from: device.endpoint)
             ?? device.endpoint
@@ -452,6 +572,109 @@ struct ADBConnectionTarget: Equatable {
         guard let colon = endpoint.lastIndex(of: ":") else { return nil }
         let port = endpoint[endpoint.index(after: colon)...]
         return port.allSatisfy(\.isNumber) ? String(port) : nil
+    }
+}
+
+struct ADBConnectionFailure: Equatable {
+    let endpoint: String
+    let detail: String
+}
+
+struct ADBRememberedEndpoint: Equatable {
+    let endpoint: String
+    let host: String
+}
+
+enum ADBRememberedEndpointResolver {
+    static func resolve(
+        service: BonjourService,
+        authorizedTransport: ADBTransport
+    ) -> ADBRememberedEndpoint {
+        if service.endpoints.contains(authorizedTransport.serial),
+           let parsed = ADBNetworkEndpoint.parse(authorizedTransport.serial) {
+            return ADBRememberedEndpoint(
+                endpoint: authorizedTransport.serial,
+                host: parsed.host
+            )
+        }
+        return ADBRememberedEndpoint(endpoint: service.endpoint, host: service.host)
+    }
+
+    /// Re-derives every remembered endpoint from the transports ADB actually
+    /// reports as authorized. This is the single place that keeps remembered
+    /// devices in step with the transport that authorized, whichever path
+    /// connected it: pairing, automatic failover, or an `adb connect` issued
+    /// outside wADB. A matching transport on the stored endpoint always wins so
+    /// dual-stack devices do not flip between addresses.
+    ///
+    /// Only exact identity counts here: the stored endpoint itself, or an
+    /// address advertised under the device's own Bonjour service name. The
+    /// host and fingerprint heuristics that `WirelessDeviceResolver.matches`
+    /// uses for display are deliberately excluded, because persisting a fuzzy
+    /// match after DHCP hands one phone's address to another would let
+    /// `PairedDeviceStore.upsert` overwrite the other phone's record.
+    static func reconcile(
+        _ devices: [LastVerifiedDevice],
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> [LastVerifiedDevice] {
+        devices.map { device in
+            let matching = transports.filter { transport in
+                transport.state == .authorized
+                    && ADBNetworkEndpoint.parse(transport.serial) != nil
+                    && isExactEndpoint(transport.serial, of: device, services: services)
+            }
+            guard !matching.contains(where: { $0.serial == device.endpoint }),
+                  let transport = matching.first else { return device }
+            return resolve(device: device, connectedEndpoint: transport.serial, services: services)
+        }
+    }
+
+    private static func isExactEndpoint(
+        _ endpoint: String,
+        of device: LastVerifiedDevice,
+        services: [BonjourService]
+    ) -> Bool {
+        endpoint == device.endpoint
+            || services.contains {
+                $0.type == BonjourService.connectType
+                    && $0.name == device.serviceName
+                    && $0.endpoints.contains(endpoint)
+            }
+    }
+
+    /// The device record to keep after `connectedEndpoint` authorized. The
+    /// endpoint is adopted only when it is exactly this device's: the reconnect
+    /// target may have been correlated by host alone, and after DHCP moves a
+    /// host between phones that address belongs to someone else.
+    static func resolve(
+        device: LastVerifiedDevice,
+        connectedEndpoint: String,
+        services: [BonjourService]
+    ) -> LastVerifiedDevice {
+        guard connectedEndpoint != device.endpoint,
+              isExactEndpoint(connectedEndpoint, of: device, services: services),
+              let parsed = ADBNetworkEndpoint.parse(connectedEndpoint) else { return device }
+        return LastVerifiedDevice(
+            endpoint: connectedEndpoint,
+            host: parsed.host,
+            serviceName: device.serviceName,
+            displayName: device.displayName,
+            fingerprint: device.fingerprint
+        )
+    }
+}
+
+enum ADBConnectionFailurePolicy {
+    static func combinedDetail(_ failures: [ADBConnectionFailure]) -> String {
+        failures.map { "\($0.endpoint): \($0.detail)" }.joined(separator: "; ")
+    }
+
+    static func recoveryDetail(
+        for endpoint: String,
+        failures: [ADBConnectionFailure]
+    ) -> String? {
+        failures.first { $0.endpoint == endpoint }?.detail
     }
 }
 
