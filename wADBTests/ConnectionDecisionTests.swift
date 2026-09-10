@@ -177,6 +177,37 @@ final class SupervisorModelTests: XCTestCase {
         ))
     }
 
+    func testFailoverStopsWhenAttemptedEndpointBecomesUnauthorized() {
+        let transport = ADBTransport(
+            serial: "[fd00::10]:43545",
+            state: .unauthorized,
+            attributes: [:]
+        )
+
+        XCTAssertFalse(ADBAutomaticReconnectPolicy.shouldContinueFailover(
+            remembered,
+            attemptedEndpoint: transport.serial,
+            transports: [transport],
+            services: []
+        ))
+    }
+
+    func testSuccessfulSecondaryConnectionUpdatesRememberedEndpoint() {
+        XCTAssertEqual(
+            ADBRememberedEndpointResolver.resolve(
+                device: remembered,
+                connectedEndpoint: "[fd00::10]:43545"
+            ),
+            LastVerifiedDevice(
+                endpoint: "[fd00::10]:43545",
+                host: "fd00::10",
+                serviceName: remembered.serviceName,
+                displayName: remembered.displayName,
+                fingerprint: remembered.fingerprint
+            )
+        )
+    }
+
     func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
         let failures = [
             ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),

@@ -472,6 +472,25 @@ enum ADBAutomaticReconnectPolicy {
             }
         }
     }
+
+    static func shouldContinueFailover(
+        _ device: LastVerifiedDevice,
+        attemptedEndpoint: String,
+        transports: [ADBTransport],
+        services: [BonjourService]
+    ) -> Bool {
+        !transports.contains { transport in
+            guard transport.state == .authorized || transport.state == .unauthorized else {
+                return false
+            }
+            return transport.serial == attemptedEndpoint
+                || WirelessDeviceResolver.matches(
+                    transport,
+                    rememberedDevice: device,
+                    services: services
+                )
+        }
+    }
 }
 
 struct ADBConnectionRetryState: Equatable {
@@ -551,6 +570,21 @@ enum ADBRememberedEndpointResolver {
             )
         }
         return ADBRememberedEndpoint(endpoint: service.endpoint, host: service.host)
+    }
+
+    static func resolve(
+        device: LastVerifiedDevice,
+        connectedEndpoint: String
+    ) -> LastVerifiedDevice {
+        guard connectedEndpoint != device.endpoint,
+              let parsed = ADBNetworkEndpoint.parse(connectedEndpoint) else { return device }
+        return LastVerifiedDevice(
+            endpoint: connectedEndpoint,
+            host: parsed.host,
+            serviceName: device.serviceName,
+            displayName: device.displayName,
+            fingerprint: device.fingerprint
+        )
     }
 }
 

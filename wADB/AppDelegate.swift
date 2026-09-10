@@ -1176,10 +1176,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if ADBOutputParser.connectSucceeded(detail) {
                         self.connectsInFlight.remove(inFlightEndpoint)
                         self.connectionRetries.removeValue(forKey: device.serviceName)
+                        let connectedDevice = ADBRememberedEndpointResolver.resolve(
+                            device: device,
+                            connectedEndpoint: endpoint
+                        )
+                        if connectedDevice != device {
+                            PairedDeviceStore.upsert(connectedDevice)
+                            self.rememberedDevices = PairedDeviceStore.load()
+                        }
                         return
                     }
                 case let .failure(error):
                     detail = error.localizedDescription
+                }
+                guard ADBAutomaticReconnectPolicy.shouldContinueFailover(
+                    device,
+                    attemptedEndpoint: endpoint,
+                    transports: self.transports,
+                    services: self.services
+                ) else {
+                    self.connectsInFlight.remove(inFlightEndpoint)
+                    self.connectionRetries.removeValue(forKey: device.serviceName)
+                    return
                 }
                 self.attemptConnection(
                     device: device,
