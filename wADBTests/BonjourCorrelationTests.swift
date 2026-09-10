@@ -7,17 +7,26 @@ final class BonjourCorrelationTests: XCTestCase {
         XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
             flags: DNSServiceFlags(kDNSServiceFlagsMoreComing),
             errorCode: DNSServiceErrorType(kDNSServiceErr_NoError),
-            hasResolvedAddresses: true
+            hasResolvedAddresses: true,
+            removedAddressInBatch: false
         ))
         XCTAssertTrue(BonjourDiscovery.shouldPublishAddressResults(
             flags: 0,
             errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
-            hasResolvedAddresses: true
+            hasResolvedAddresses: true,
+            removedAddressInBatch: false
         ))
         XCTAssertFalse(BonjourDiscovery.shouldPublishAddressResults(
             flags: 0,
             errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
-            hasResolvedAddresses: false
+            hasResolvedAddresses: false,
+            removedAddressInBatch: false
+        ))
+        XCTAssertTrue(BonjourDiscovery.shouldPublishAddressResults(
+            flags: 0,
+            errorCode: DNSServiceErrorType(kDNSServiceErr_NoSuchRecord),
+            hasResolvedAddresses: false,
+            removedAddressInBatch: true
         ))
     }
 

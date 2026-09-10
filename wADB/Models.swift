@@ -528,6 +528,24 @@ struct ADBConnectionTarget: Equatable {
     }
 }
 
+struct ADBConnectionFailure: Equatable {
+    let endpoint: String
+    let detail: String
+}
+
+enum ADBConnectionFailurePolicy {
+    static func combinedDetail(_ failures: [ADBConnectionFailure]) -> String {
+        failures.map { "\($0.endpoint): \($0.detail)" }.joined(separator: "; ")
+    }
+
+    static func recoveryDetail(
+        for endpoint: String,
+        failures: [ADBConnectionFailure]
+    ) -> String? {
+        failures.first { $0.endpoint == endpoint }?.detail
+    }
+}
+
 struct ADBNetworkEndpoint: Equatable {
     let host: String
     let port: UInt16

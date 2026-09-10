@@ -177,6 +177,25 @@ final class SupervisorModelTests: XCTestCase {
         ))
     }
 
+    func testRecoveryUsesOnlyTheFailureFromTheEndpointItProbes() {
+        let failures = [
+            ADBConnectionFailure(endpoint: "192.0.2.10:43545", detail: "connection refused"),
+            ADBConnectionFailure(endpoint: "[fd00::10]:43545", detail: "No route to host"),
+        ]
+
+        XCTAssertEqual(
+            ADBConnectionFailurePolicy.recoveryDetail(
+                for: "192.0.2.10:43545",
+                failures: failures
+            ),
+            "connection refused"
+        )
+        XCTAssertEqual(
+            ADBConnectionFailurePolicy.combinedDetail(failures),
+            "192.0.2.10:43545: connection refused; [fd00::10]:43545: No route to host"
+        )
+    }
+
     func testTemporaryBonjourDisappearanceKeepsLastLiveTarget() {
         let service = BonjourService(
             name: remembered.serviceName,

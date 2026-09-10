@@ -1133,7 +1133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         device: LastVerifiedDevice,
         target: ADBConnectionTarget,
         remainingEndpoints: ArraySlice<String>,
-        failures: [String],
+        failures: [ADBConnectionFailure],
         inFlightEndpoint: String,
         adb: ADBManager,
         generation: UUID,
@@ -1142,7 +1142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let endpoint = remainingEndpoints.first else {
             connectsInFlight.remove(inFlightEndpoint)
             recordConnectionFailure(
-                failures.joined(separator: "; "),
+                failures,
                 device: device,
                 target: target
             )
@@ -1176,7 +1176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     device: device,
                     target: target,
                     remainingEndpoints: remainingEndpoints.dropFirst(),
-                    failures: failures + ["\(endpoint): \(detail)"],
+                    failures: failures + [ADBConnectionFailure(
+                        endpoint: endpoint,
+                        detail: detail
+                    )],
                     inFlightEndpoint: inFlightEndpoint,
                     adb: adb,
                     generation: generation,
@@ -1187,22 +1190,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func recordConnectionFailure(
-        _ detail: String,
+        _ failures: [ADBConnectionFailure],
         device: LastVerifiedDevice,
         target: ADBConnectionTarget
     ) {
+        let detail = ADBConnectionFailurePolicy.combinedDetail(failures)
         var retry = connectionRetries[device.serviceName] ?? ADBConnectionRetryState()
         let delay = retry.recordFailure(targetIdentity: target.retryIdentity, now: Date())
         connectionRetries[device.serviceName] = retry
         logger.error(
             "Connect failed for \(device.displayName, privacy: .public) at \(target.endpoint, privacy: .public); retrying in \(Int(delay), privacy: .public)s: \(detail, privacy: .public)"
         )
-        evaluateRestartRecommendation(
-            failureDetail: detail,
-            device: device,
-            target: target,
-            retry: retry
-        )
+        if let recoveryDetail = ADBConnectionFailurePolicy.recoveryDetail(
+            for: target.endpoint,
+            failures: failures
+        ) {
+            evaluateRestartRecommendation(
+                failureDetail: recoveryDetail,
+                device: device,
+                target: target,
+                retry: retry
+            )
+        }
     }
 
     private func evaluateRestartRecommendation(
