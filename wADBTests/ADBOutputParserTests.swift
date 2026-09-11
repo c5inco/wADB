@@ -62,4 +62,30 @@ final class ADBOutputParserTests: XCTestCase {
         XCTAssertFalse(ADBOutputParser.connectSucceeded("cannot connect to daemon"))
         XCTAssertFalse(ADBOutputParser.connectSucceeded(""))
     }
+
+    func testBareConnectFailureIsDistinguishedFromSocketFailures() {
+        XCTAssertTrue(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to connect to 192.0.2.10:36747"
+        ))
+        XCTAssertTrue(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to connect to [fe80::10%en0]:36747\n"
+        ))
+        XCTAssertTrue(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to connect to '192.0.2.10:36747'"
+        ))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to connect to '192.0.2.10:36747': Connection refused"
+        ))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to connect to 192.0.2.10:36747: No route to host"
+        ))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason(
+            "failed to authenticate to 192.0.2.10:36747"
+        ))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason(
+            "* daemon not running; starting now\nfailed to connect to 192.0.2.10:36747"
+        ))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason("connected to 192.0.2.10:36747"))
+        XCTAssertFalse(ADBOutputParser.connectWasRejectedWithoutReason(""))
+    }
 }

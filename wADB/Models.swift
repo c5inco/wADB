@@ -237,6 +237,15 @@ struct WirelessDevice: Equatable {
     let displayName: String
     let endpoint: String?
     let state: WirelessDeviceState
+    /// The remembered device this row stands for, when there is one. The row
+    /// `id` follows the live Bonjour name, which differs from the remembered
+    /// name whenever the device was correlated by host fallback.
+    var rememberedServiceName: String? = nil
+
+    /// The key per-device recovery verdicts (restart ADB, needs pairing) are
+    /// recorded under. Reconnect records them by remembered service name, so
+    /// every lookup that starts from a row goes through this, never `id`.
+    var recoveryID: String { rememberedServiceName ?? id }
 }
 
 enum WirelessDeviceResolver {
@@ -287,7 +296,8 @@ enum WirelessDeviceResolver {
                 id: id,
                 displayName: displayName,
                 endpoint: service?.endpoint ?? remembered?.endpoint ?? endpoint(from: representative.serial),
-                state: state
+                state: state,
+                rememberedServiceName: remembered?.serviceName
             )
         }
 
@@ -301,7 +311,8 @@ enum WirelessDeviceResolver {
                 id: service.name,
                 displayName: remembered.displayName,
                 endpoint: service.endpoint,
-                state: .connecting
+                state: .connecting,
+                rememberedServiceName: remembered.serviceName
             )
         }
 
@@ -311,6 +322,22 @@ enum WirelessDeviceResolver {
             }
             return stateRank($0.state) < stateRank($1.state)
         }
+    }
+
+    /// Service names of remembered devices that currently have an authorized
+    /// transport. Any per-device recovery verdict (restart, needs pairing) is
+    /// void for these, because the phone has plainly accepted this host.
+    static func authorizedRememberedIDs(
+        transports: [ADBTransport],
+        services: [BonjourService],
+        rememberedDevices: [LastVerifiedDevice]
+    ) -> Set<String> {
+        Set(rememberedDevices.compactMap { remembered in
+            transports.contains {
+                $0.state == .authorized
+                    && matches($0, rememberedDevice: remembered, services: services)
+            } ? remembered.serviceName : nil
+        })
     }
 
     static func isWireless(
@@ -702,17 +729,63 @@ struct ADBNetworkEndpoint: Equatable {
     }
 }
 
+/// What a remembered device's repeated reconnect failures point at once a
+/// TCP probe has confirmed the preferred address accepts connections.
+enum ADBDeviceRecoveryAction: Equatable {
+    case none
+    /// The host reaches the phone but the ADB server cannot; restart it.
+    case restartServer
+    /// The phone reaches the host and turns it away; pair again.
+    case needsPairing
+}
+
 enum ADBDeviceRecoveryPolicy {
     static let failuresBeforeReachabilityCheck = 2
+    /// Deliberately later than the restart check: a phone can reject one or
+    /// two handshakes while it re-keys, roams, or is still bringing adbd up
+    /// after wireless debugging is toggled on. With the 15s/30s backoff the
+    /// third round lands roughly a minute after the native session dropped.
+    static let failuresBeforePairingRecommendation = 3
 
-    static func shouldCheckEndpoint(
+    /// Names the recovery that a successful TCP probe of `probedEndpoint`
+    /// would confirm, or `.none` when nothing should be probed.
+    ///
+    /// Restart: the preferred address fails with "no route to host" while
+    /// Bonjour still advertises the phone. The ADB server's routing is wedged
+    /// even though the host has a route, which the probe verifies.
+    ///
+    /// Needs pairing: every advertised address was dialled and every one came
+    /// back as a bare "failed to connect to <endpoint>" with no socket reason.
+    /// That is what the server prints when TCP succeeds but the phone rejects
+    /// the TLS handshake (`SSLV3_ALERT_CERTIFICATE_UNKNOWN`), which is what
+    /// happens after the user forgets this host on the phone. A phone with
+    /// wireless debugging switched off closes the port, so its failure
+    /// carries a reason ("Connection refused") and the probe fails; neither
+    /// reaches this state. Remaining false positives: a stale Bonjour record
+    /// whose port has been reused by an unrelated TLS service, or a phone
+    /// whose adbd is mid-restart across three consecutive rounds. Both
+    /// self-heal, because the recommendation is dropped as soon as the device
+    /// authorizes or Bonjour publishes a different port.
+    static func recoveryToConfirm(
         consecutiveFailures: Int,
-        failureDetail: String,
+        failures: [ADBConnectionFailure],
+        probedEndpoint: String,
         hasAdvertisedService: Bool
-    ) -> Bool {
+    ) -> ADBDeviceRecoveryAction {
         guard hasAdvertisedService,
-              consecutiveFailures >= failuresBeforeReachabilityCheck else { return false }
-        return failureDetail.localizedCaseInsensitiveContains("no route to host")
+              let probedDetail = ADBConnectionFailurePolicy.recoveryDetail(
+                for: probedEndpoint,
+                failures: failures
+              ) else { return .none }
+        if consecutiveFailures >= failuresBeforeReachabilityCheck,
+           probedDetail.localizedCaseInsensitiveContains("no route to host") {
+            return .restartServer
+        }
+        if consecutiveFailures >= failuresBeforePairingRecommendation,
+           failures.allSatisfy({ ADBOutputParser.connectWasRejectedWithoutReason($0.detail) }) {
+            return .needsPairing
+        }
+        return .none
     }
 }
 
