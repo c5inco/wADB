@@ -6,10 +6,16 @@ import ServiceManagement
 private final class WirelessDeviceMenuItemView: NSView {
     static let rowHeight: CGFloat = 24
     static let rowWidth: CGFloat = 280
-    /// AppKit title inset after the menu-item state/checkmark column.
-    static let titleLeadingInset: CGFloat = 22
+    /// AppKit title inset after the menu-item state/checkmark column. macOS 27
+    /// widened the standard menu padding; these values were measured on 27.
+    static let titleLeadingInset: CGFloat = usesWidenedMenuMetrics ? 28.5 : 22
     /// Matches where AppKit's key-equivalent column ends, measured against `⌘Q`.
-    static let trailingInset: CGFloat = 16
+    static let trailingInset: CGFloat = usesWidenedMenuMetrics ? 16.5 : 16
+
+    private static let usesWidenedMenuMetrics: Bool = {
+        if #available(macOS 27, *) { return true }
+        return false
+    }()
     static let statusSpacing: CGFloat = 8
     static let iconSize: CGFloat = 16
     static let iconTitleSpacing: CGFloat = 4
