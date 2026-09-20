@@ -88,7 +88,7 @@ xcodebuildmcp macos build \
     --configuration Debug \
     --derived-data-path "$derived_data_path" \
     --prefer-xcodebuild true \
-    "${build_options[@]}"
+    ${build_options[@]+"${build_options[@]}"}
 
 [[ -d "$built_app" ]] || die "build succeeded but app bundle was not found at $built_app"
 
