@@ -41,7 +41,12 @@ private final class WirelessDeviceMenuItemView: NSView {
 
         connection = NSTextField(labelWithString: device.state.title)
         connection.font = .menuFont(ofSize: 0)
-        connection.textColor = .secondaryLabelColor
+        switch device.state {
+        case .restartRecommended, .needsPairing:
+            connection.textColor = Self.tintColor(for: device.state)
+        case .connected, .connecting:
+            connection.textColor = .secondaryLabelColor
+        }
 
         super.init(frame: NSRect(x: 0, y: 0, width: Self.rowWidth, height: Self.rowHeight))
         autoresizingMask = [.width]
@@ -80,11 +85,13 @@ private final class WirelessDeviceMenuItemView: NSView {
 
     override func layout() {
         super.layout()
-        // `intrinsicContentSize` is fractional and rounds down often enough to
-        // clip the final glyph, so give each label a whole point of slack.
+        // AppKit's menu font can draw beyond the label's reported intrinsic
+        // bounds. Extend only the label's clipping frame so the final glyph
+        // remains visible without shifting the right-aligned row content.
         var connectionSize = connection.intrinsicContentSize
         connectionSize.width.round(.up)
         connectionSize.height.round(.up)
+        connectionSize.height += 1
         let statusWidth = Self.iconSize + Self.iconTitleSpacing + connectionSize.width
         let statusX = bounds.width - Self.trailingInset - statusWidth
         status.frame = NSRect(
@@ -96,7 +103,7 @@ private final class WirelessDeviceMenuItemView: NSView {
         connection.frame = NSRect(
             x: statusX + Self.iconSize + Self.iconTitleSpacing,
             y: ((bounds.height - connectionSize.height) / 2).rounded(.toNearestOrAwayFromZero),
-            width: connectionSize.width,
+            width: connectionSize.width + 2,
             height: connectionSize.height
         )
 
@@ -1530,9 +1537,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let item = NSMenuItem()
                     item.title = "\(device.displayName), \(device.state.title)"
                     item.toolTip = device.endpoint
-                    let onActivate: (() -> Void)? = device.state == .restartRecommended
-                        ? { [weak self] in self?.restartADBForDevice(device.recoveryID) }
-                        : nil
+                    let onActivate: (() -> Void)?
+                    switch device.state {
+                    case .restartRecommended:
+                        onActivate = { [weak self] in
+                            self?.restartADBForDevice(device.recoveryID)
+                        }
+                    case .needsPairing:
+                        onActivate = { [weak self] in self?.pairNewDevice() }
+                    case .connected, .connecting:
+                        onActivate = nil
+                    }
                     item.view = WirelessDeviceMenuItemView(
                         device: device,
                         onActivate: onActivate
@@ -1703,6 +1718,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 devices: [restartRecommended],
                 showsPairing: true,
                 to: directory.appendingPathComponent("wadb-restart-recommended.png")
+            )
+            let needsPairing = WirelessDevice(
+                id: connected.id,
+                displayName: connected.displayName,
+                endpoint: connected.endpoint,
+                state: .needsPairing
+            )
+            try captureMenuPreview(
+                title: nil,
+                devices: [needsPairing],
+                showsPairing: true,
+                to: directory.appendingPathComponent("wadb-needs-pairing.png")
             )
             try captureMenuPreview(
                 title: nil,
